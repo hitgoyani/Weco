@@ -166,6 +166,55 @@ async def main():
           document.getElementById('opaque-card-over-bg-image')?.remove();
         }""")
 
+        # Test: on-node #fff + dark background-image:
+        # white text on it must NOT be falsely flagged as low contrast against #fff;
+        # dark text on it must be skipped (never falsely passed as readable against #fff).
+        await page.evaluate("""() => {
+          const container = document.createElement('div');
+          container.id = 'bg-image-and-color-test';
+          container.style.backgroundColor = '#ffffff';
+          container.style.backgroundImage = 'linear-gradient(#000, #111)';
+          const pWhite = document.createElement('p');
+          pWhite.id = 'white-text-over-bg-image';
+          pWhite.style.color = '#ffffff';
+          pWhite.textContent = 'White text over dark image';
+          container.appendChild(pWhite);
+          const pDark = document.createElement('p');
+          pDark.id = 'dark-text-over-bg-image';
+          pDark.style.color = '#111111';
+          pDark.textContent = 'Dark text over dark image';
+          container.appendChild(pDark);
+          document.body.insertBefore(container, document.body.firstChild);
+        }""")
+        bg_node_res = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        assert bg_node_res and bg_node_res.get('ok')
+        node_contrast = [f for f in bg_node_res['report']['findings'] if f['title'] == 'Possible low text contrast']
+        node_selectors = [f['selector'] for f in node_contrast]
+        assert not any('#white-text-over-bg-image' in s for s in node_selectors), 'White text on node with background-image must not be flagged against background-color'
+        assert not any('#dark-text-over-bg-image' in s for s in node_selectors), 'Dark text on node with background-image must be skipped (not evaluated against white)'
+        await page.evaluate("""() => document.getElementById('bg-image-and-color-test')?.remove()""")
+
+        # Test: 2000px container at 390px viewport with overflow-x: auto must be reported as the culprit
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await page.evaluate("""() => {
+          const wideBox = document.createElement('div');
+          wideBox.id = 'wide-overflow-container';
+          wideBox.style.width = '2000px';
+          wideBox.style.height = '100px';
+          wideBox.style.overflowX = 'auto';
+          wideBox.textContent = 'Wide overflowing content';
+          document.body.insertBefore(wideBox, document.body.firstChild);
+        }""")
+        overflow_res = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        assert overflow_res and overflow_res.get('ok')
+        overflow_findings = [f for f in overflow_res['report']['findings'] if f['ruleId'] == 'overflow-horizontal']
+        assert len(overflow_findings) >= 1
+        assert '#wide-overflow-container' in overflow_findings[0]['selector'] or 'wide-overflow-container' in overflow_findings[0]['selector'], f"Expected wide container as culprit, got: {overflow_findings[0]['selector']}"
+        await page.evaluate("""() => document.getElementById('wide-overflow-container')?.remove()""")
+        await page.set_viewport_size({"width": 1280, "height": 720})
+
         # Regression: many earlier DOM findings must not crowd later high-severity issues out of the cap.
         # Generate 315 duplicate IDs (which caps at 60 and records 255 dropped), plus diverse rules to exceed 300 display limit.
         await page.evaluate("""() => {

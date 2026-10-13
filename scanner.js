@@ -402,9 +402,6 @@
     let hasBackgroundImage = false;
     for (const ancestor of chain) {
       const style = styleOf(ancestor);
-      if (style.backgroundImage && style.backgroundImage !== 'none') {
-        hasBackgroundImage = true;
-      }
       const color = parseCssColor(style.backgroundColor);
       if (color && color.alpha >= 0.999) {
         background = color.rgb;
@@ -412,6 +409,9 @@
       } else if (color && color.alpha > 0) {
         if (!background || hasBackgroundImage) return null;
         background = composite(color.rgb, background, color.alpha);
+      }
+      if (style.backgroundImage && style.backgroundImage !== 'none') {
+        hasBackgroundImage = true;
       }
     }
     if (hasBackgroundImage) return null;
@@ -613,7 +613,7 @@
     }
   }
 
-  function scanPage() {
+  function scanPage(options = {}) {
     findings.length = 0;
     seenByRule.clear();
     ruleCounts.clear();
@@ -740,8 +740,9 @@
     if (pageWidth > viewportWidth + 4) {
       const overflowers = all.filter(el => {
         if (!visible(el)) return false;
+        if (el === document.documentElement || el === document.body) return false;
         const style = styleOf(el);
-        if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX) && el !== document.documentElement && el !== document.body) return false;
+        if (['hidden', 'clip'].includes(style.overflowX)) return false;
         let ancestor = el.parentElement;
         while (ancestor && ancestor !== document.documentElement && ancestor !== document.body) {
           const ancStyle = styleOf(ancestor);
@@ -757,8 +758,8 @@
       }).map(el => {
         const r = el.getBoundingClientRect();
         const amount = Math.max(0, r.right - viewportWidth, -r.left);
-        return { el, amount, rect: r };
-      }).filter(item => item.amount > 3).sort((a, b) => b.amount - a.amount);
+        return { el, amount, width: r.width, rect: r };
+      }).filter(item => item.amount > 3).sort((a, b) => (b.width - a.width) || (b.amount - a.amount));
       const culprit = overflowers[0]?.el || document.documentElement;
       add(culprit, 'responsive', 'high', 'Horizontal overflow detected', 'The document is wider than the usable viewport, which can force horizontal scrolling. Intentional carousels, tables, and maps may be exceptions.', `Usable viewport: ${viewportWidth}px; document scroll width: ${pageWidth}px; largest candidate overhang: ${Math.round(overflowers[0]?.amount || (pageWidth - viewportWidth))}px.`, 'Inspect fixed widths, large images, long unbroken strings, grid/flex children, and missing min-width: 0. Retest at narrower viewports.', 'medium', { viewportWidth, documentWidth: pageWidth, overflowCandidateCount: overflowers.length, ruleId: 'overflow-horizontal' });
     }
@@ -829,6 +830,36 @@
     } else if (location.protocol === 'http:' && !isLocalHostname(location.hostname)) {
       const password = document.querySelector('input[type="password"]:not(:disabled)');
       if (password && visible(password)) add(password, 'best-practice', 'critical', 'Password field is displayed on an insecure HTTP page', 'Data sent from a public HTTP page is not protected by HTTPS in transit; authentication pages should use secure transport.', 'A visible password field is present on a non-local HTTP origin. No input values are read.', 'Serve authentication and sensitive forms over HTTPS, redirect HTTP to HTTPS, and configure secure cookies.', 'high', { ruleId: 'form-password-http' });
+    }
+
+    if (options.deep) {
+      for (const el of all) {
+        for (const attr of ['aria-labelledby', 'aria-describedby', 'aria-controls', 'aria-owns']) {
+          const val = (el.getAttribute(attr) || '').trim();
+          if (!val) continue;
+          const ids = val.split(/\s+/).filter(Boolean);
+          for (const id of ids) {
+            if (!document.getElementById(id)) {
+              add(el, 'accessibility', 'high', 'Unresolved ARIA ID reference', `Attribute ${attr} references id "${id}", which does not exist in the DOM.`, `Referenced ID "${id}" is missing.`, `Ensure the element with id="${id}" exists or update ${attr}.`, 'high', { ruleId: 'aria-idref-unresolved', dedupeKey: `${attr}:${id}` });
+            }
+          }
+        }
+      }
+      const headings = all.filter(el => /^H[1-6]$/.test(el.tagName) && visible(el));
+      let lastLevel = 0;
+      for (const h of headings) {
+        const level = Number(h.tagName.slice(1));
+        if (lastLevel > 0 && level > lastLevel + 1) {
+          add(h, 'accessibility', 'low', 'Heading level skipped', `Heading level jumps from <h${lastLevel}> to <h${level}>, skipping an intermediate level.`, `Heading level ${level} follows ${lastLevel}.`, `Nest headings sequentially (e.g. <h2> before <h3>) to maintain document hierarchy.`, 'low', { ruleId: 'heading-skipped' });
+        }
+        lastLevel = level;
+      }
+      for (const a of document.querySelectorAll('a[target="_blank"][href]')) {
+        const rel = (a.getAttribute('rel') || '').toLowerCase();
+        if (!rel.includes('noopener') && !rel.includes('noreferrer')) {
+          add(a, 'best-practice', 'low', 'External link target="_blank" missing rel="noopener"', 'Links opening in a new tab without rel="noopener" or rel="noreferrer" can expose window.opener.', 'Target is _blank without noopener/noreferrer.', 'Add rel="noopener noreferrer" to external links opening in a new tab.', 'low', { ruleId: 'link-blank-noopener' });
+        }
+      }
     }
 
     const openShadowHosts = all.filter(el => el.shadowRoot && el.shadowRoot.mode === 'open').length;
@@ -998,7 +1029,7 @@
     (async () => {
       try {
         await waitForDomQuiet();
-        const report = scanPage();
+        const report = scanPage(message.options || {});
         sendResponse({ ok: true, report });
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || 'Unknown scan error.' });

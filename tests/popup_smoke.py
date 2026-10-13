@@ -103,7 +103,19 @@ async def main():
             },
             configurable: true
           });
-          Object.defineProperty(window.crypto, 'subtle', {value: {async digest() { return new Uint8Array(32).fill(7).buffer; }}, configurable: true});
+          Object.defineProperty(window.crypto, 'subtle', {
+            value: {
+              async digest(algo, data) {
+                const arr = new Uint8Array(32);
+                const src = new Uint8Array(data);
+                for (let i = 0; i < src.length; i++) {
+                  arr[i % 32] = (arr[i % 32] * 31 + src[i]) & 0xff;
+                }
+                return arr.buffer;
+              }
+            },
+            configurable: true
+          });
           window.__sampleReport = report;
         }""", real_report)
         await page.add_script_tag(path=str(ROOT / "privacy.js"))

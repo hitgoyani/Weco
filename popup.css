@@ -120,6 +120,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 button:disabled { cursor: not-allowed; }
 .link-btn { background: none; border: 0; padding: 0; color: #b7a6ff; text-decoration: underline; font: inherit; cursor: pointer; }
 .link-btn:hover { color: #d5cbff; }
+.topbar-actions { display: flex; align-items: center; gap: 6px; }
+.popout-btn { background: rgba(162,139,255,.1); border: 1px solid rgba(162,139,255,.28); border-radius: 50px; color: #d1c6ff; font-size: 10px; font-weight: 750; padding: 5px 9px; cursor: pointer; transition: all .15s ease; }
+.popout-btn:hover { background: rgba(162,139,255,.22); border-color: var(--purple); color: #fff; }
+.scan-controls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.deep-toggle-label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; cursor: pointer; user-select: none; padding: 2px 4px; }
+.deep-toggle-label input[type="checkbox"] { accent-color: var(--purple); cursor: pointer; }
+.deep-toggle-label:hover { color: var(--text); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

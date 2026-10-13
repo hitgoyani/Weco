@@ -11,7 +11,10 @@
     <header class="topbar">
       <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="brand-copy"><div class="eyebrow">LOCAL-FIRST DEVELOPER TOOL</div><h1>Web QA Copilot</h1></div>
-      <div class="local-pill"><i aria-hidden="true"></i> LOCAL</div>
+      <div class="topbar-actions">
+        <button id="popoutBtn" class="popout-btn" title="Open in movable window without changing website screen ratio" type="button">↗ Float</button>
+        <div class="local-pill"><i aria-hidden="true"></i> LOCAL</div>
+      </div>
     </header>
 
     <section class="page-card" aria-label="Current page">
@@ -19,7 +22,13 @@
       <div class="page-meta"><div class="page-title" id="pageTitle">Ready to inspect</div><div class="page-url" id="pageUrl">Scan the active tab to find issues.</div></div>
     </section>
 
-    <button class="primary-btn" id="scanBtn"><span class="scan-icon" aria-hidden="true">⌕</span><span id="scanBtnText">Scan current page</span><span class="btn-arrow" aria-hidden="true">↗</span></button>
+    <div class="scan-controls">
+      <button class="primary-btn" id="scanBtn"><span class="scan-icon" aria-hidden="true">⌕</span><span id="scanBtnText">Scan current page</span><span class="btn-arrow" aria-hidden="true">↗</span></button>
+      <label class="deep-toggle-label" title="Enable deep analysis: Shadow DOM components, ARIA reference integrity, and heading hierarchy">
+        <input type="checkbox" id="deepScanToggle">
+        <span>Deep Analysis mode</span>
+      </label>
+    </div>
     <div class="status-line" id="statusLine" role="status" aria-live="polite">No page data has been collected yet.</div>
 
     <section id="reportSection" hidden>
@@ -55,7 +64,7 @@
         <button class="secondary-btn" id="saveBaselineBtn" title="Save this scan as the baseline for this page">Save baseline</button>
         <button class="secondary-btn" id="compareBtn" title="Compare the current scan with a saved baseline">Compare baseline</button>
         <button class="secondary-btn" id="exportBtn">Export JSON</button>
-        <button class="secondary-btn" id="copyAllBtn">Copy fix plan</button>
+        <button class="secondary-btn" id="copyAllBtn" title="Copy developer prompt to fix all detected issues">Copy all issues prompt</button>
         <button class="secondary-btn span-two" id="manageBaselinesBtn">Manage saved baselines</button>
       </div>
       <div id="comparePanel" class="compare-panel" hidden></div>

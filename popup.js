@@ -24,7 +24,14 @@ function jsonForPrompt(value) {
 }
 
 
-function hashString(str) {
+async function sha256Hex(str) {
+  if (globalThis.crypto?.subtle) {
+    try {
+      const bytes = new TextEncoder().encode(str);
+      const buf = await crypto.subtle.digest('SHA-256', bytes);
+      return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    } catch (_) {}
+  }
   let h = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
@@ -33,14 +40,15 @@ function hashString(str) {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-function stableFindingKey(f) {
+async function stableFindingKey(f) {
   if (f.targetKey) return f.targetKey;
-  const rawTarget = f.rawSelector || f.selector || '';
-  return `${f.ruleId || f.category}:${hashString((f.ruleId || f.category) + '|' + rawTarget)}`;
+  const target = f.selector || '';
+  const hash = await sha256Hex((f.ruleId || f.category) + '|' + target);
+  return `${f.ruleId || f.category}:${hash}`;
 }
 
-function findingSignature(f) {
-  return stableFindingKey(f);
+async function findingSignature(f) {
+  return await stableFindingKey(f);
 }
 
 function sanitizedFinding(f) {
@@ -60,7 +68,7 @@ function sanitizedFinding(f) {
 }
 
 function sanitizeReportForSharing(report) {
-  const extVersion = (typeof chrome !== 'undefined' && chrome.runtime?.getManifest?.()?.version) || report.version || '1.2.0';
+  const extVersion = (typeof chrome !== 'undefined' && chrome.runtime?.getManifest?.()?.version) || '';
   return {
     product: report.product || 'Local Web QA Copilot',
     version: extVersion,
@@ -277,6 +285,30 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
+async function ensureInjected(tab) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['privacy.js', 'scanner.js'] });
+  } catch (execErr) {
+    const isHostPermErr = /permission|host|access|cannot access/i.test(execErr?.message || '');
+    if (chrome.permissions?.request && isHostPermErr) {
+      const u = new URL(tab.url);
+      const originPattern = `${u.origin}/*`;
+      let granted = false;
+      try {
+        granted = await chrome.permissions.request({ origins: [originPattern] });
+      } catch (permErr) {
+        throw new Error(`Permission request failed: ${permErr?.message || 'unknown error'}`);
+      }
+      if (!granted) {
+        throw new Error('Permission to inspect this page was not granted. Grant site access or click the extension icon on the tab.');
+      }
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['privacy.js', 'scanner.js'] });
+    } else {
+      throw execErr;
+    }
+  }
+}
+
 async function runScan() {
   const active = await getActiveTab().catch(() => null);
   if (active && active.id !== state.tab?.id) { await selectTabContext(active); return; }
@@ -295,29 +327,9 @@ async function runScan() {
   setStatus('Waiting briefly for the page to settle, then inspecting the rendered DOM.');
   try { await chrome.storage.session.remove(sessionReportKey(state.tab.id)); } catch (_) {}
   try {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
-    } catch (execErr) {
-      const isHostPermErr = /permission|host|access|cannot access/i.test(execErr?.message || '');
-      if (chrome.permissions?.request && isHostPermErr) {
-        const u = new URL(state.tab.url);
-        const originPattern = `${u.origin}/*`;
-        let granted = false;
-        try {
-          granted = await chrome.permissions.request({ origins: [originPattern] });
-        } catch (permErr) {
-          throw new Error(`Permission request failed: ${permErr?.message || 'unknown error'}`);
-        }
-        if (!granted) {
-          setStatus('Permission to inspect this page was not granted. Grant site access or click the extension icon on the tab.', 'error');
-          return;
-        }
-        await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
-      } else {
-        throw execErr;
-      }
-    }
-    const response = await chrome.tabs.sendMessage(scanTab.id, { type: 'LOCAL_WEB_QA_SCAN' });
+    await ensureInjected(state.tab);
+    const isDeep = Boolean($('deepScanToggle')?.checked);
+    const response = await chrome.tabs.sendMessage(scanTab.id, { type: 'LOCAL_WEB_QA_SCAN', options: { deep: isDeep } });
     if (scanEpoch !== contextEpoch || state.tab?.id !== scanTab.id) return;
     if (!response || !response.ok || !response.report) throw new Error(response?.error || 'The scanner did not return a report. Try reloading the page.');
     state.report = response.report;
@@ -411,12 +423,12 @@ function renderFindings() {
 
 async function inspectFinding(finding) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
+    await ensureInjected(state.tab);
     const response = await chrome.tabs.sendMessage(state.tab.id, { type: 'LOCAL_WEB_QA_HIGHLIGHT', selector: finding.selector });
     if (response?.ok) setStatus(`Highlighted ${finding.selector} on the page. The highlight does not edit the site's element styles.`, 'success');
     else setStatus(response?.error || 'Could not locate that element. Rescan the page.', 'error');
   } catch (error) {
-    setStatus('Could not inspect the element. The page may have navigated; scan again.', 'error');
+    setStatus(error?.message || 'Could not inspect the element. The page may have navigated; scan again.', 'error');
   }
 }
 
@@ -485,14 +497,14 @@ async function saveBaseline() {
         links: state.report.metrics.links,
         forms: state.report.metrics.forms
       },
-      findings: state.report.findings.map(f => ({
+      findings: await Promise.all(state.report.findings.map(async f => ({
         ruleId: f.ruleId,
         title: safeTextForSharing(f.title),
         category: f.category,
         severity: f.severity,
         selector: safeSelectorForSharing(f.selector),
-        targetKey: stableFindingKey(f)
-      }))
+        targetKey: await stableFindingKey(f)
+      })))
     };
     await chrome.storage.local.set({ [key]: baseline });
     state.baseline = baseline;
@@ -515,15 +527,17 @@ async function compareBaseline() {
       return;
     }
     const beforeFindings = baseline.findings || [];
-    const before = new Set(beforeFindings.map(findingSignature));
-    const after = new Set(state.report.findings.map(findingSignature));
-    const added = state.report.findings.filter(f => !before.has(findingSignature(f)));
-    const kept = state.report.findings.filter(f => before.has(findingSignature(f)));
+    const beforeKeys = await Promise.all(beforeFindings.map(findingSignature));
+    const afterKeys = await Promise.all(state.report.findings.map(findingSignature));
+    const before = new Set(beforeKeys);
+    const after = new Set(afterKeys);
+    const added = state.report.findings.filter((f, idx) => !before.has(afterKeys[idx]));
+    const kept = state.report.findings.filter((f, idx) => before.has(afterKeys[idx]));
     const widthDiff = baseline.viewport && state.report.viewport ? Math.abs(baseline.viewport.width - state.report.viewport.width) : 0;
     const heightDiff = baseline.viewport && state.report.viewport ? Math.abs(baseline.viewport.height - state.report.viewport.height) : 0;
     const viewportChanged = !!(baseline.viewport && state.report.viewport && (widthDiff > 40 || heightDiff > 60));
     const resolutionReliable = !!baseline.completeForComparison && state.report.completeForComparison !== false && !baseline.truncated && !state.report.truncated && !viewportChanged;
-    const resolved = resolutionReliable ? beforeFindings.filter(f => !after.has(findingSignature(f))) : [];
+    const resolved = resolutionReliable ? beforeFindings.filter((f, idx) => !after.has(beforeKeys[idx])) : [];
     state.baseline = baseline;
     state.compare = { resolved, added, kept, resolutionReliable, viewportChanged };
     const topAdded = added.slice(0, 5).map(f => `<div class="finding-delta new">+ ${escapeHtml(f.title)} <span>(${escapeHtml(f.severity)})</span></div>`).join('');
@@ -574,6 +588,21 @@ $('searchInput').addEventListener('input', () => {
 });
 $('saveBaselineBtn').addEventListener('click', saveBaseline);
 $('compareBtn').addEventListener('click', compareBaseline);
+$('popoutBtn')?.addEventListener('click', () => {
+  if (chrome.windows?.create) {
+    chrome.windows.create({
+      url: chrome.runtime.getURL('popup.html?float=1'),
+      type: 'popup',
+      width: 480,
+      height: 720
+    }).catch(() => {});
+    window.close();
+  }
+});
+if (location.search.includes('float=1')) {
+  const btn = $('popoutBtn');
+  if (btn) btn.hidden = true;
+}
 $('exportBtn').addEventListener('click', exportReport);
 $('manageBaselinesBtn').addEventListener('click', openBaselineManager);
 $('footerBaselinesBtn')?.addEventListener('click', openBaselineManager);

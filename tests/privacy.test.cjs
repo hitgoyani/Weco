@@ -67,4 +67,22 @@ assert.equal(p.safeTextForSharing('Card: 4111111111111111'), 'Card: [number omit
 assert.equal(p.safeTextForSharing('Digest: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'), 'Digest: [opaque token omitted]');
 assert.equal(p.safeTextForSharing('Key: ' + ['sk', 'live', '1234567890abcdefghijklmnopqrstuvwxyz123'].join('_')), 'Key: [opaque token omitted]');
 
+// PAN, AWS keys, GitHub tokens, JWT, IBAN
+assert.equal(p.safeTextForSharing('PAN: ABCDE1234F'), 'PAN: [opaque token omitted]');
+assert.equal(p.safeTextForSharing('AWS: AKIAIOSFODNN7EXAMPLE'), 'AWS: [opaque token omitted]');
+assert.equal(p.safeTextForSharing('Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz'), 'Token: [opaque token omitted]');
+assert.equal(p.safeTextForSharing('JWT: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozG408B'), 'JWT: [opaque token omitted]');
+assert.equal(p.safeTextForSharing('IBAN: GB82WEST12345698765432'), 'IBAN: [number omitted]');
+assert.equal(p.safeTextForSharing('IBAN: GB82 WEST 1234 5698 7654 32'), 'IBAN: [number omitted]');
+
+// Context-dependent numbers: non-redaction direction (SKUs, epochs, year lists)
+assert.equal(p.safeTextForSharing('Item SKU 9876543210'), 'Item SKU 9876543210');
+assert.equal(p.safeTextForSharing('Timestamp 1712345678901'), 'Timestamp 1712345678901');
+assert.equal(p.safeTextForSharing('Archives: 1999 2024 2025'), 'Archives: 1999 2024 2025');
+
+// Context-dependent numbers: redaction direction
+assert.equal(p.safeTextForSharing('call 9876543210'), 'call [number omitted]');
+assert.equal(p.safeTextForSharing('account: 1712345678901'), 'account: [number omitted]');
+assert.equal(p.safeTextForSharing('phone: 1999 2024 2025'), 'phone: [number omitted]');
+
 console.log('PASS: baseline identity collision regressions, SPA fragments and export URL/selector privacy.');

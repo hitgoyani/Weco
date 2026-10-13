@@ -71,6 +71,28 @@
       return `__QA_DATE_${dates.length - 1}__`;
     });
 
+    // PAN (5 letters, 4 digits, 1 letter)
+    text = text.replace(/\b[A-Z]{5}[0-9]{4}[A-Z]\b/g, '[opaque token omitted]');
+
+    // AWS access keys (AKIA/ASIA + 16 chars)
+    text = text.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[opaque token omitted]');
+
+    // GitHub tokens
+    text = text.replace(/\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g, '[opaque token omitted]');
+
+    // Full JWT shape (three base64url segments starting with standard eyJ)
+    text = text.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[opaque token omitted]');
+
+    // IBANs (2 letters, 2 digits, then 11-30 alphanumeric characters, optional spaces)
+    text = text.replace(/\b[A-Z]{2}\d{2}(?:[ \t]?[A-Z0-9]{4}){2,7}(?:[ \t]?[A-Z0-9]{1,4})?\b/g, match => {
+      const clean = match.replace(/[\s\t]/g, '');
+      if (clean.length >= 15 && clean.length <= 34 && /[A-Z]/.test(clean.slice(4))) {
+        return '[number omitted]';
+      }
+      return match;
+    });
+
+    // Payment card numbers with Luhn check
     text = text.replace(/\b(?:\d[ -]?){13,19}\b/g, match => {
       const digitsOnly = match.replace(/\D/g, '');
       if (digitsOnly.length >= 13 && digitsOnly.length <= 19 && isLuhnValid(digitsOnly)) {
@@ -79,7 +101,8 @@
       return match;
     });
 
-    text = text.replace(/(?:\+\d{1,3}[\s.-]*)?(?:\(?\d{2,5}\)?[\s.-]*)?\d{3,5}[\s.-]?\d{3,5}\b/g, match => {
+    // International phone numbers with explicit leading '+'
+    text = text.replace(/\+\d{1,3}[\s.-]?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{3,5}\b/g, match => {
       const digitsOnly = match.replace(/\D/g, '');
       if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
         return '[number omitted]';
@@ -87,6 +110,15 @@
       return match;
     });
 
+    // Formatted US/standard phones with parentheses or hyphens (e.g. (555) 123-4567 or 555-123-4567)
+    text = text.replace(/\b(?:\(\d{3}\)|\d{3}-)\s*\d{3}-\d{4}\b/g, '[number omitted]');
+
+    // Numbers preceded by context words (phone, call, mobile, tel, cell, contact, card, account, dial, sms)
+    text = text.replace(/(^|[^\w])(phone|call|mobile|tel|cell|contact|card|account|dial|sms)\b([\s:#-]*(?:at\s+)?)((?:\d[ -]?){7,19}\d|\d{10,18})\b/gi, (match, prefix, contextWord, separator, number) => {
+      return `${prefix}${contextWord}${separator}[number omitted]`;
+    });
+
+    // Long opaque tokens and hashes
     text = text.replace(/\b(?:Bearer\s+[A-Za-z0-9._~+/-]+=*|[A-Za-z0-9_-]{32,})\b/g, token => {
       if (/^Bearer\s+/i.test(token)) return '[opaque token omitted]';
       if (/^[a-fA-F0-9]{32,}$/.test(token)) return '[opaque token omitted]';
