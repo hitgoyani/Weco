@@ -65,8 +65,9 @@ async def main():
             onActivated: {addListener(fn) { this.listener = fn; }},
             onUpdated: {addListener(fn) { this.listener = fn; }}
           };
-          Object.defineProperty(window.chrome, 'runtime', {value: {getURL: path => 'chrome-extension://test/' + path}, configurable: true});
+          Object.defineProperty(window.chrome, 'runtime', {value: {getURL: path => 'chrome-extension://test/' + path, getManifest: () => ({version: '1.2.0'})}, configurable: true});
           Object.defineProperty(window.chrome, 'tabs', {value: tabs, configurable: true});
+          Object.defineProperty(window.chrome, 'windows', {value: {async getCurrent() { return {id: 1}; }}, configurable: true});
           Object.defineProperty(window.chrome, 'scripting', {value: {async executeScript() { return []; }}, configurable: true});
           Object.defineProperty(window.chrome, 'storage', {value: {session: storageApi(sessionStore), local: storageApi(localStore)}, configurable: true});
           Object.defineProperty(window.crypto, 'subtle', {value: {async digest() { return new Uint8Array(32).fill(7).buffer; }}, configurable: true});

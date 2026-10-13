@@ -40,7 +40,10 @@ jobs:
 
       - name: Validate JavaScript syntax
         run: |
-          node -c background.js privacy.js popup.js scanner.js baselines.js
+          for file in background.js privacy.js popup.js scanner.js baselines.js; do
+            echo "Checking syntax of $file"
+            node --check "$file"
+          done
 
       - name: Run Privacy & Baseline unit tests
         run: |
@@ -51,11 +54,12 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: 'requirements-dev.txt'
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install playwright
+          pip install -r requirements-dev.txt
 
       - name: Install Playwright Chromium
         run: |

@@ -61,6 +61,7 @@ $('deleteAllBtn').addEventListener('click', async () => {
     const data = await chrome.storage.local.get(null);
     const keys = Object.keys(data).filter(isBaselineKey);
     if (!keys.length) { setStatus('There are no saved baselines to delete.'); return; }
+    if (!window.confirm(`Are you sure you want to delete all ${keys.length} saved baseline(s)? This action cannot be undone.`)) return;
     await chrome.storage.local.remove(keys);
     setStatus(`${keys.length} baseline(s) deleted.`, 'success');
     await loadBaselines();

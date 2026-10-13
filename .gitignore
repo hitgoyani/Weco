@@ -17,3 +17,7 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Test artifacts and builds
+test-results/
+*.zip

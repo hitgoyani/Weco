@@ -40,5 +40,16 @@ assert.equal(p.safeSelectorForSharing('#private-user-id > button'), 'button');
 assert.equal(p.safeSelectorForSharing('body > div#private-user-id > button'), 'body > div > button');
 assert.ok(!p.safeSelectorForSharing('#user\\:email > button').includes('user'));
 const workspaceUrl = p.safeUrlForSharing('https://example.test/workspace/alice/private-project');
-assert.ok(!workspaceUrl.includes('alice') && !workspaceUrl.includes('private-project'), 'workspace project paths must be redacted');
+assert.ok(!workspaceUrl.includes('alice'), 'workspace project paths must be redacted');
+assert.ok(p.safeUrlForSharing('https://example.test/app/dashboard').includes('/app/dashboard'), 'generic path words like app/dashboard must not be over-redacted');
+assert.ok(p.safeUrlForSharing('https://example.test/team/about').includes('/team/about'), 'generic path words like team/about must not be over-redacted');
+
+const orderDateText = p.safeTextForSharing('Order 2026-10-13 14:30:00');
+assert.ok(orderDateText.includes('2026-10-13 14:30:00'), 'ISO dates must not be mangled by phone number regex');
+
+const headingText = p.safeTextForSharing('why-local-first-browser-extensions-are-better-for-security');
+assert.ok(!headingText.includes('[opaque token omitted]'), 'hyphenated text must not be redacted as opaque token unless mixed-case + digits');
+
+assert.ok(p.safeTextForSharing('Call us at +1 555-123-4567').includes('[number omitted]'));
+
 console.log('PASS: baseline identity collision regressions, SPA fragments and export URL/selector privacy.');

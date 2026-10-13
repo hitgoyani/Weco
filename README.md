@@ -1,6 +1,6 @@
 # Local Web QA Copilot v1.2.0
 
-A student-built, local-first Chrome/Chromium Edge side-panel extension inspired by website QA workflows. It is **not the official Floto extension**, uses no Floto branding, and is not affiliated with Floto.
+A local-first Chrome/Chromium Edge side-panel extension for web accessibility, performance, and QA checks.
 
 ## Install
 
@@ -48,7 +48,7 @@ The tests use a local Chromium engine for the DOM and rendering checks, plus Chr
 Install the Python test dependency if needed:
 
 ```bash
-python -m pip install playwright
+python -m pip install -r requirements-dev.txt
 python -m playwright install chromium
 ```
 
@@ -60,11 +60,11 @@ python tests/run_regression.py
 python tests/popup_smoke.py
 ```
 
-The regression suite covers the Claude review's reported classes of problems: URL-key collisions, URL/selector redaction, accessible-name false positives, fragment routing, negative tabindex and inert behavior, CSS color parsing (including `oklch()`), disabled controls, overflow-candidate selection, severity-first truncation, incomplete comparison handling, and same-URL reload invalidation.
+The regression suite covers key classes of problems: URL-key collisions, URL/selector redaction, accessible-name false positives, fragment routing, negative tabindex and inert behavior, CSS color parsing (including `oklch()`), disabled controls, overflow-candidate selection, severity-first truncation, incomplete comparison handling, and same-URL reload invalidation.
 
 ## Privacy and permissions
 
-The extension requests `tabs`, `activeTab`, `scripting`, `storage`, `clipboardWrite`, and `sidePanel`; it does not request broad host access and makes no network requests of its own. Page inspection runs after you invoke a scan. Reports are kept in `chrome.storage.session` so the side panel can restore results for the same tab during the browser session. Baselines are saved to extension local storage and can be individually deleted from **Manage baselines**.
+The extension requests `tabs`, `activeTab`, `scripting`, `storage`, `clipboardWrite`, and `sidePanel`, with optional host permissions on scan; it does not request broad host access upfront and makes no network requests of its own. Page inspection runs after you invoke a scan. Reports are kept in `chrome.storage.session` so the side panel can restore results for the same tab during the browser session. Baselines are saved to extension local storage and can be individually deleted from **Manage baselines**.
 
 Baseline identity is a SHA-256 digest of the exact URL identity (including query state and SPA route fragments where applicable), rather than storing the raw identity as a key. Baseline metadata keeps a scrubbed URL label for readability. Exports and copied prompts drop query values and fragments, strip URL credentials, mask likely opaque/private path segments, and remove CSS ID selectors; however, privacy heuristics cannot recognize every name or secret in every site-specific string. Review reports before sharing them. The report held in extension session storage may contain the full current page URL and evidence, and remains local to the browser profile.
 
@@ -79,7 +79,7 @@ No cloud AI/API integration is included. Copied prompts are intended for a codin
 - A scan cannot reliably map a live DOM selector to a source component, infer the true root cause, or prove a code fix worked. Use Playwright/Lighthouse and manual verification for broader testing.
 - Some page content, CSSOM, and resource details are restricted by the browser. Cross-origin stylesheets may not be readable; the report warns about incomplete coverage where possible.
 - Contrast and small-target findings are estimates/hints. A finding is not proof of a WCAG violation, and no finding is not proof of compliance.
-- Baseline comparison is based on category, issue title, and selector. It only lists findings as “no longer detected” when both snapshots are eligible for reliable comparison; even then, absence from a snapshot is not proof that a code change fixed the problem.
+- Baseline comparison matches findings by rule ID and sanitized selector. It only lists findings as “no longer detected” when both snapshots are eligible for reliable comparison; even then, absence from a snapshot is not proof that a code change fixed the problem.
 
 ## Project files
 

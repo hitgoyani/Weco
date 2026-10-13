@@ -69,12 +69,16 @@ async def main():
         assert has("Interactive control has no accessible name", "#hidden-text-button")
         assert not has("Interactive control has no accessible name", "#labelled-by-button")
         assert has("Interactive control has no accessible name", "#labelled-by-hidden-only-button")
+        assert not has("Interactive control has no accessible name", "#btn-with-title")
         assert has("Image alternative text is missing or whitespace-only", "#image-without-alt")
         assert has("Form control has no accessible label", "#unlabelled-field")
         assert has("Form control has no accessible label", "#aria-hidden-label-input")
         assert not has("Form control has no accessible label", "#email-field")
         assert not has("Form control has no accessible label", "#contents-field")
         assert not has("Form control has no accessible label", "#hidden-field")
+        assert not has("Form control has no accessible label", "#opacity-zero-field")
+        assert not has("Form control has no accessible label", "#switch-with-content")
+        assert has("Form control has no accessible label", "#switch-without-label")
 
         # Focus management: -1 and inert subtrees must not be reported as tab-focusable aria-hidden controls.
         focus_findings = matching("Focusable control is inside aria-hidden content")
@@ -103,12 +107,14 @@ async def main():
         empty_heading = next(f for f in findings if f["title"] == "Heading has no accessible text")
         assert await page.evaluate("s => document.querySelector(s)?.tagName", empty_heading["selector"]) == "H3"
 
-        # Semantics: flag made-up ARIA, abstract roles, and invalid attribute values, but do not flag a valid doc-* role.
+        # Semantics: flag made-up ARIA, abstract roles, and invalid attribute values, but do not flag a valid doc-* role or menu role.
         assert has("Unknown or invalid ARIA role")
         assert has("Abstract ARIA role must not be used in content", "#abstract-role-element")
         assert has("Invalid ARIA attribute value", "#invalid-token-element")
+        assert not any(f["title"] == "Invalid boolean ARIA value" and f["selector"] == "#aria-expanded-undefined-btn" for f in findings)
         invalid_roles = [await page.evaluate("s => document.querySelector(s)?.getAttribute('role') || ''", f["selector"]) for f in matching("Unknown or invalid ARIA role")]
         assert 'doc-chapter' not in invalid_roles, invalid_roles
+        assert 'menu' not in invalid_roles, invalid_roles
         assert has("Unrecognized ARIA attribute")
         assert has("Positive tabindex disrupts focus order")
         assert has("Viewport setting may prevent zoom")
@@ -118,6 +124,7 @@ async def main():
         assert len(overflow) == 1, overflow
         overflow_class = await page.evaluate("s => document.querySelector(s)?.className || ''", overflow[0]["selector"])
         assert "overflow-box" in overflow_class, (overflow[0]["selector"], overflow_class)
+        assert "#wide-contained-table" not in overflow[0]["selector"]
         small_target = matching("Small interactive target")
         assert small_target and all(f["category"] == "accessibility" for f in small_target)
 

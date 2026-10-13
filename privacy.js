@@ -17,10 +17,9 @@
     'user', 'users', 'member', 'members', 'profile', 'profiles', 'account',
     'accounts', 'customer', 'customers', 'order', 'orders', 'invoice',
     'invoices', 'session', 'sessions', 'reset', 'verify', 'verification',
-    'invite', 'invites', 'token', 'auth', 'authorization', 'download', 'file',
-    'workspace', 'workspaces', 'project', 'projects', 'repo', 'repos',
-    'repository', 'repositories', 'org', 'orgs', 'organization', 'organizations',
-    'team', 'teams', 'tenant', 'tenants', 'client', 'clients', 'app', 'apps'
+    'invite', 'invites', 'token', 'auth', 'authorization', 'download',
+    'workspace', 'workspaces', 'repo', 'repos', 'repository', 'repositories',
+    'org', 'orgs', 'organization', 'organizations', 'tenant', 'tenants'
   ]);
 
   function normalizeParamName(key) {
@@ -46,8 +45,12 @@
   function safeTextForSharing(value) {
     return String(value ?? '')
       .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email omitted]')
-      .replace(/\b(?:\+?\d[\d .()\-]{7,}\d)\b/g, '[number omitted]')
-      .replace(/\b(?:Bearer\s+)?[A-Za-z0-9_-]{40,}\b/g, '[opaque token omitted]');
+      .replace(/(?<!\d{4}-)(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)[-.\s]?|\b)\d{3}[-.\s]\d{3}[-.\s]?\d{4}\b/g, '[number omitted]')
+      .replace(/\b(?:Bearer\s+[A-Za-z0-9._~+/-]+=*|[A-Za-z0-9_-]{40,})\b/g, token => {
+        if (/^Bearer\s+/i.test(token)) return '[opaque token omitted]';
+        if (/[A-Z]/.test(token) && /[a-z]/.test(token) && /\d/.test(token)) return '[opaque token omitted]';
+        return token;
+      });
   }
 
   function safePathname(pathname) {
@@ -153,7 +156,7 @@
       if (hash && hash !== '#' && hash.toLowerCase() !== '#top') {
         const isCommonInPageAnchor = ['#top', '#bottom', '#header', '#footer', '#content', '#main'].includes(hash.toLowerCase());
         const isExplicitRoute = options && options.isRoute === true;
-        const isExplicitAnchor = options && options.isAnchor === true;
+        const isExplicitAnchor = (options && options.isAnchor === true) || (!isExplicitRoute && isCommonInPageAnchor);
         const looksLikeRoute = hash.startsWith('#/') || hash.startsWith('#!') || hash.includes('/') || hash.includes('?') || hash.includes('=');
         if (!isExplicitAnchor && (isExplicitRoute || looksLikeRoute || (options && options.isAnchor === false))) {
           routeFragment = hash;

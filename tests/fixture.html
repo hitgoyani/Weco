@@ -47,6 +47,12 @@
   <p id="complex-background" class="complex-bg">Complex background should be skipped.</p>
   <button id="disabled-low-contrast" disabled style="color:#aaa;background:#fff">Disabled control: skip contrast heuristic</button>
 
+  <label for="opacity-zero-field" style="opacity: 0">Opacity zero accessible label</label>
+  <input id="opacity-zero-field" type="text">
+  <input type="button" id="btn-with-title" title="Save">
+  <div role="switch" id="switch-with-content" tabindex="0">Dark mode</div>
+  <div role="switch" id="switch-without-label" tabindex="0"></div>
+
   <h2>Navigation</h2>
   <a href="#top">Jump to top convention</a>
   <a href="#/dashboard">Hash router route</a>
@@ -62,10 +68,13 @@
   <div role="command" id="abstract-role-element">Abstract role command must be flagged</div>
   <div role="button" aria-invalid="maybe" id="invalid-token-element">Invalid aria-invalid token value</div>
   <div role="doc-chapter">Valid document-module role; must not be flagged.</div>
+  <div role="menu" id="valid-menu-role" aria-label="Menu actions"><div role="menuitem" tabindex="-1">Menu item</div></div>
+  <button id="aria-expanded-undefined-btn" aria-expanded="undefined">Options with undefined expanded</button>
   <div role="button" tabindex="4">Positive tabindex</div>
   <div contenteditable id="editable-bare-div">Bare contenteditable element</div>
   <h2>Responsive</h2>
   <div class="overflow-box">This intentionally wide box can cause horizontal overflow on narrow viewports.</div>
+  <div style="overflow-x: auto"><div id="wide-contained-table" style="width: 2000px">Contained wide content</div></div>
   <button class="tiny-control" aria-label="Tiny action" title="Tiny action"></button>
 
   <main id="main-content"><h2>Visible main landmark</h2><p>Fixture body contains a main landmark for this explicit check.</p></main>

@@ -120,3 +120,12 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 button:disabled { cursor: not-allowed; }
 .link-btn { background: none; border: 0; padding: 0; color: #b7a6ff; text-decoration: underline; font: inherit; cursor: pointer; }
 .link-btn:hover { color: #d5cbff; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
