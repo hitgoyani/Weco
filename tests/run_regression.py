@@ -215,6 +215,43 @@ async def main():
         await page.evaluate("""() => document.getElementById('wide-overflow-container')?.remove()""")
         await page.set_viewport_size({"width": 1280, "height": 720})
 
+        # Test: Route discovery collects same-origin dynamic routes, cleans params/hashes, and ignores destructive/asset/external URLs
+        await page.evaluate("""() => {
+          const base = document.createElement('base');
+          base.id = 'route-test-base';
+          base.href = 'https://example.com/test/';
+          document.head.appendChild(base);
+
+          const linksHolder = document.createElement('div');
+          linksHolder.id = 'route-discovery-test-holder';
+          linksHolder.innerHTML = `
+            <a href="/dashboard/applications">Applications</a>
+            <a href="/dashboard/jobs?utm_source=test&ref=123">Jobs</a>
+            <a href="/dashboard/resume#overview">Resume</a>
+            <a href="https://other-domain.example.com/external">External</a>
+            <a href="/logout">Logout</a>
+            <a href="/static/image.png">Image</a>
+            <a href="javascript:void(0)">JS link</a>
+          `;
+          document.body.appendChild(linksHolder);
+        }""")
+        routes_res = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        assert routes_res and routes_res.get('ok')
+        discovered = routes_res['report'].get('discoveredRoutes', [])
+        assert any('/dashboard/applications' in r for r in discovered), discovered
+        assert any('/dashboard/jobs' in r for r in discovered), discovered
+        assert any('/dashboard/resume' in r for r in discovered), discovered
+        assert not any('utm_source' in r for r in discovered), 'Tracking query params must be stripped from discovered routes'
+        assert not any('#overview' in r for r in discovered), 'In-page anchor hash must be stripped from discovered routes'
+        assert not any('other-domain.example.com' in r for r in discovered), 'External origin must be excluded'
+        assert not any('/logout' in r for r in discovered), 'Logout endpoints must be excluded'
+        assert not any('.png' in r for r in discovered), 'Asset endpoints must be excluded'
+        await page.evaluate("""() => {
+          document.getElementById('route-test-base')?.remove();
+          document.getElementById('route-discovery-test-holder')?.remove();
+        }""")
+
         # Regression: many earlier DOM findings must not crowd later high-severity issues out of the cap.
         # Generate 315 duplicate IDs (which caps at 60 and records 255 dropped), plus diverse rules to exceed 300 display limit.
         await page.evaluate("""() => {

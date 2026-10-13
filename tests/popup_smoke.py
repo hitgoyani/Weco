@@ -75,11 +75,27 @@ async def main():
           window.__permissionGranted = true;
           window.__requestedOrigins = [];
           const tabs = {
-            async query() { return [{id: 1, url: report.url, title: report.title, active: true}]; },
-            async get() { return {id: 1, url: report.url, title: report.title, active: true}; },
+            currentUrl: report.url,
+            async query() { return [{id: 1, url: this.currentUrl, title: report.title, active: true}]; },
+            async get() { return {id: 1, url: this.currentUrl, title: report.title, active: true}; },
             async create() { return {id: 2}; },
+            async update(tabId, props) {
+              if (props.url) {
+                this.currentUrl = props.url;
+                setTimeout(() => {
+                  if (this.onUpdated?.listener) this.onUpdated.listener(tabId, { status: 'complete', url: props.url });
+                }, 10);
+              }
+              return {id: 1, url: this.currentUrl, title: report.title, active: true};
+            },
             async sendMessage(_tabId, message) {
-              if (message.type === 'LOCAL_WEB_QA_SCAN') return {ok: true, report: window.__sampleReport};
+              if (message.type === 'LOCAL_WEB_QA_SCAN') {
+                if (window.__sampleReport) {
+                  window.__sampleReport.url = this.currentUrl;
+                  try { window.__sampleReport.path = new URL(this.currentUrl).pathname; } catch (_) {}
+                }
+                return {ok: true, report: window.__sampleReport};
+              }
               if (message.type === 'LOCAL_WEB_QA_HIGHLIGHT') {
                 window.__highlightMessages.push(message);
                 return {ok: true};
@@ -183,8 +199,31 @@ async def main():
           {status: 'complete'}, {id: 1, url: window.__sampleReport.url, title: 'Mock QA page'})""")
         await page.wait_for_function("document.querySelector('#statusLine').textContent.includes('Page loaded')")
         assert not await page.locator('#scanBtn').is_disabled()
+
+        # Multi-page site audit: discover and audit linked pages, verify page filter and fix plan
+        await page.evaluate("""() => {
+          window.__sampleReport.discoveredRoutes = [
+            'https://example.com/mock-qa',
+            'https://example.com/mock-qa/jobs'
+          ];
+        }""")
+        await page.click("#scanSiteBtn")
+        await page.wait_for_function("document.querySelector('#statusLine').textContent.includes('Site audit complete')")
+        assert not await page.locator("#pageFilter").is_hidden()
+        options = await page.locator("#pageFilter option").all_inner_texts()
+        assert any("/mock-qa" in opt for opt in options), options
+        assert any("/jobs" in opt for opt in options), options
+        status_text = await page.locator("#statusLine").inner_text()
+        assert "2 pages audited" in status_text, status_text
+        await page.select_option("#pageFilter", value="/mock-qa/jobs")
+        assert await page.locator(".finding-card").count() >= 1
+        await page.select_option("#pageFilter", value="all")
+        fix_plan = await page.evaluate("() => fullFixPlan()")
+        assert "multi-page-site-audit" in fix_plan
+        assert "/mock-qa/jobs" in fix_plan
+
         assert not errors, errors
-        print("PASS: side-panel state, real scanner IDs, inspect/copy actions, distinct #id baselines, permissions flow, reload invalidation.")
+        print("PASS: side-panel state, real scanner IDs, inspect/copy actions, distinct #id baselines, permissions flow, reload invalidation, multi-page site audit.")
         await browser.close()
 
 

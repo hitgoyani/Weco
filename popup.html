@@ -23,7 +23,10 @@
     </section>
 
     <div class="scan-controls">
-      <button class="primary-btn" id="scanBtn"><span class="scan-icon" aria-hidden="true">⌕</span><span id="scanBtnText">Scan current page</span><span class="btn-arrow" aria-hidden="true">↗</span></button>
+      <div class="scan-btn-group">
+        <button class="primary-btn" id="scanBtn"><span class="scan-icon" aria-hidden="true">⌕</span><span id="scanBtnText">Scan current page</span><span class="btn-arrow" aria-hidden="true">↗</span></button>
+        <button class="secondary-btn scan-site-btn" id="scanSiteBtn" title="Discover and audit all linked dynamic pages on this site" type="button"><span class="scan-icon" aria-hidden="true">🌐</span><span id="scanSiteBtnText">Audit all site pages</span></button>
+      </div>
       <label class="deep-toggle-label" title="Enable deep analysis: Shadow DOM components, ARIA reference integrity, and heading hierarchy">
         <input type="checkbox" id="deepScanToggle">
         <span>Deep Analysis mode</span>
@@ -42,6 +45,9 @@
       <div class="summary-strip" id="summaryStrip"></div>
 
       <div class="toolbar">
+        <select id="pageFilter" aria-label="Filter findings by page route" hidden>
+          <option value="all">All pages</option>
+        </select>
         <select id="categoryFilter" aria-label="Filter findings by category">
           <option value="all">All categories</option>
           <option value="accessibility">Accessibility</option>

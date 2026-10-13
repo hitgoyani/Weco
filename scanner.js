@@ -918,6 +918,58 @@
       }
     }
 
+    function normalizeRouteUrl(href) {
+      try {
+        const baseUri = document.baseURI || location.href;
+        const u = new URL(href, baseUri);
+        const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'fbclid', 'gclid'];
+        for (const param of trackingParams) u.searchParams.delete(param);
+        if (u.hash && !u.hash.startsWith('#/') && !u.hash.startsWith('#!')) {
+          u.hash = '';
+        }
+        if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
+          u.pathname = u.pathname.slice(0, -1);
+        }
+        return u.href;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function collectDiscoveredRoutes() {
+      const baseUri = document.baseURI || location.href;
+      let origin = location.origin;
+      try {
+        if ((!origin || origin === 'null') && baseUri) {
+          const parsedBase = new URL(baseUri);
+          if (parsedBase.origin && parsedBase.origin !== 'null') origin = parsedBase.origin;
+        }
+      } catch (_) {}
+
+      const routes = new Set();
+      const current = normalizeRouteUrl(location.href);
+      if (current) routes.add(current);
+
+      const linkCandidates = document.querySelectorAll('a[href], [data-href], [data-route], [data-to]');
+      for (const el of linkCandidates) {
+        const raw = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-route') || el.getAttribute('data-to');
+        if (!raw) continue;
+        const trimmed = String(raw).trim();
+        if (!trimmed || trimmed === '#' || trimmed.toLowerCase().startsWith('#top') || /^javascript:/i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed)) continue;
+        try {
+          const u = new URL(trimmed, baseUri);
+          if (origin && origin !== 'null' && u.origin !== origin) continue;
+          if (!['http:', 'https:'].includes(u.protocol)) continue;
+          if (/\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tar|mp4|webm|mp3|wav|css|js|map|json|xml|txt)$/i.test(u.pathname)) continue;
+          if (/\/(log-?out|sign-?out|delete|auth\/signout|api\/)/i.test(u.pathname)) continue;
+
+          const normalized = normalizeRouteUrl(u.href);
+          if (normalized) routes.add(normalized);
+        } catch (_) {}
+      }
+      return Array.from(routes);
+    }
+
     return {
       product: 'Local Web QA Copilot',
       version: VERSION,
@@ -929,6 +981,7 @@
       viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: dpr },
       isHashAnchor,
       isClientRoute,
+      discoveredRoutes: collectDiscoveredRoutes(),
       metrics: {
         domElements: all.length, images: document.images.length, links: document.links.length,
         forms: document.forms.length, externalScripts: externalScriptCount,
