@@ -20,6 +20,9 @@
   const findings = [];
   const seenByRule = new Map();
   const ruleCounts = new Map();
+  const droppedByRule = new Map();
+  const ruleTitles = new Map();
+  const droppedStats = { total: 0, counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, categories: {} };
   let truncated = false;
   let styleCache = new WeakMap();
   let visibleCache = new WeakMap();
@@ -313,19 +316,28 @@
 
   function add(el, category, severity, title, description, evidence, recommendation, confidence = 'high', extra = {}) {
     const ruleId = extra.ruleId || ruleIdFromTitle(title);
-    let ruleSeen = seenByRule.get(ruleId);
+    const ruleKey = extra.dedupeKey ? `${ruleId}:${extra.dedupeKey}` : ruleId;
+    let ruleSeen = seenByRule.get(ruleKey);
     if (!ruleSeen) {
       ruleSeen = new WeakSet();
-      seenByRule.set(ruleId, ruleSeen);
+      seenByRule.set(ruleKey, ruleSeen);
     }
     if (el && ruleSeen.has(el)) return;
     if (el) ruleSeen.add(el);
 
+    ruleTitles.set(ruleId, title);
     const count = ruleCounts.get(ruleId) || 0;
-    if (count >= MAX_PER_RULE) return;
+    if (count >= MAX_PER_RULE) {
+      droppedByRule.set(ruleId, (droppedByRule.get(ruleId) || 0) + 1);
+      droppedStats.total += 1;
+      droppedStats.counts[severity] = (droppedStats.counts[severity] || 0) + 1;
+      droppedStats.categories[category] = (droppedStats.categories[category] || 0) + 1;
+      return;
+    }
     ruleCounts.set(ruleId, count + 1);
 
     findings.push({
+      id: `f-${findings.length + 1}`,
       el, ruleId, category, severity, title,
       element: el ? `<${el.tagName.toLowerCase()}>` : 'document',
       description, evidence: String(evidence || '').slice(0, 260), recommendation, confidence, ...extra
@@ -387,17 +399,22 @@
     let node = el;
     while (node && node instanceof Element) { chain.unshift(node); node = node.parentElement; }
     let background = initialCanvasColor();
+    let hasBackgroundImage = false;
     for (const ancestor of chain) {
       const style = styleOf(ancestor);
-      if (style.backgroundImage && style.backgroundImage !== 'none') return null;
+      if (style.backgroundImage && style.backgroundImage !== 'none') {
+        hasBackgroundImage = true;
+      }
       const color = parseCssColor(style.backgroundColor);
-      if (!color) return null;
-      if (color.alpha >= 0.999) background = color.rgb;
-      else if (color.alpha > 0) {
-        if (!background) return null;
+      if (color && color.alpha >= 0.999) {
+        background = color.rgb;
+        hasBackgroundImage = false;
+      } else if (color && color.alpha > 0) {
+        if (!background || hasBackgroundImage) return null;
         background = composite(color.rgb, background, color.alpha);
       }
     }
+    if (hasBackgroundImage) return null;
     return background;
   }
 
@@ -585,10 +602,10 @@
         if (booleanAria.has(name)) {
           const allowed = booleanAllowsUndefined.has(name) ? ['true', 'false', 'undefined'] : ['true', 'false'];
           if (!allowed.includes(value)) {
-            add(el, 'accessibility', 'medium', 'Invalid boolean ARIA value', `${name} expects a true/false${booleanAllowsUndefined.has(name) ? ' or undefined' : ''} value.`, `Attribute ${name} has a non-boolean value.`, 'Use aria attribute values exactly as specified by WAI-ARIA.', 'medium', { ruleId: 'aria-attr-invalid' });
+            add(el, 'accessibility', 'medium', 'Invalid boolean ARIA value', `${name} expects a true/false${booleanAllowsUndefined.has(name) ? ' or undefined' : ''} value.`, `Attribute ${name} has a non-boolean value.`, 'Use aria attribute values exactly as specified by WAI-ARIA.', 'medium', { ruleId: 'aria-attr-invalid', dedupeKey: name });
           }
         } else if (name in tokenAriaAllowed && !tokenAriaAllowed[name].has(value)) {
-          add(el, 'accessibility', 'medium', 'Invalid ARIA attribute value', `The value "${attr.value}" is not a recognized token for ${name}.`, `Attribute ${name} has an unrecognized value "${attr.value}".`, `Use one of the allowed tokens: ${Array.from(tokenAriaAllowed[name]).filter(Boolean).join(', ')}.`, 'medium', { ruleId: 'aria-attr-invalid' });
+          add(el, 'accessibility', 'medium', 'Invalid ARIA attribute value', `The value "${attr.value}" is not a recognized token for ${name}.`, `Attribute ${name} has an unrecognized value "${attr.value}".`, `Use one of the allowed tokens: ${Array.from(tokenAriaAllowed[name]).filter(Boolean).join(', ')}.`, 'medium', { ruleId: 'aria-attr-invalid', dedupeKey: name });
         }
       }
       const rawTabIndex = el.getAttribute('tabindex');
@@ -600,6 +617,11 @@
     findings.length = 0;
     seenByRule.clear();
     ruleCounts.clear();
+    droppedByRule.clear();
+    ruleTitles.clear();
+    droppedStats.total = 0;
+    droppedStats.counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    droppedStats.categories = {};
     truncated = false;
     styleCache = new WeakMap();
     visibleCache = new WeakMap();
@@ -815,11 +837,16 @@
     if (iframeCount > 0) coverageWarnings.push(`The scan checks iframe titles but does not inspect the contents of ${iframeCount} iframe(s).`);
     coverageWarnings.push('This is a point-in-time DOM snapshot. Lazy content that has not loaded, closed shadow roots and cross-origin frame contents are outside its coverage. Rescan after important UI states appear.');
 
+    for (const [ruleId, dropped] of droppedByRule.entries()) {
+      const ruleName = ruleTitles.get(ruleId) || ruleId;
+      coverageWarnings.push(`${dropped} additional ${ruleName} findings were not listed individually.`);
+    }
+
     const severityRank = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
     findings.sort((a, b) => (severityRank[a.severity] ?? 5) - (severityRank[b.severity] ?? 5) || a.category.localeCompare(b.category) || a.title.localeCompare(b.title));
-    const totalFindings = findings.length;
-    truncated = totalFindings > DISPLAY_LIMIT;
-    if (truncated) coverageWarnings.push(`${totalFindings - DISPLAY_LIMIT} lower-priority findings were omitted from the displayed report.`);
+    const totalFindings = findings.length + droppedStats.total;
+    truncated = findings.length > DISPLAY_LIMIT;
+    if (truncated) coverageWarnings.push(`${findings.length - DISPLAY_LIMIT} lower-priority findings were omitted from the displayed report.`);
     const displayedFindings = findings.slice(0, DISPLAY_LIMIT);
     for (const f of displayedFindings) {
       if (!f.selector) {
@@ -836,6 +863,12 @@
     for (const f of findings) {
       counts[f.severity] = (counts[f.severity] || 0) + 1;
       categories[f.category] = (categories[f.category] || 0) + 1;
+    }
+    for (const [sev, c] of Object.entries(droppedStats.counts)) {
+      counts[sev] = (counts[sev] || 0) + c;
+    }
+    for (const [cat, c] of Object.entries(droppedStats.categories)) {
+      categories[cat] = (categories[cat] || 0) + c;
     }
 
     const rawHash = location.hash || '';
@@ -876,7 +909,7 @@
       counts, categories, findings: displayedFindings,
       totalFindings, displayedFindings: displayedFindings.length,
       truncated,
-      completeForComparison: !truncated && !coverageWarnings.some(w => /not audited|does not inspect|not listed individually|sampled|open shadow root|iframe\(s\)|omitted from the displayed report|stylesheet\(s\).*could not be inspected/i.test(w)),
+      completeForComparison: !truncated && droppedStats.total === 0 && !coverageWarnings.some(w => /not audited|does not inspect|not listed individually|sampled|open shadow root|iframe\(s\)|omitted from the displayed report|stylesheet\(s\).*could not be inspected/i.test(w)),
       coverageWarnings,
       limitations: [
         'This is a rule-based first-pass scan, not a complete WCAG, SEO, performance, security, or functional audit.',

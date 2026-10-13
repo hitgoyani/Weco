@@ -24,9 +24,23 @@ function jsonForPrompt(value) {
 }
 
 
+function hashString(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function stableFindingKey(f) {
+  if (f.targetKey) return f.targetKey;
+  const rawTarget = f.rawSelector || f.selector || '';
+  return `${f.ruleId || f.category}:${hashString((f.ruleId || f.category) + '|' + rawTarget)}`;
+}
+
 function findingSignature(f) {
-  const safeSelector = safeSelectorForSharing(f.selector);
-  return [f.ruleId || f.category, safeSelector].join('|');
+  return stableFindingKey(f);
 }
 
 function sanitizedFinding(f) {
@@ -62,6 +76,10 @@ function sanitizeReportForSharing(report) {
       links: report.metrics.links,
       forms: report.metrics.forms,
       externalScripts: report.metrics.externalScripts,
+      iframes: report.metrics.iframes,
+      openShadowRoots: report.metrics.openShadowRoots,
+      contrastCandidates: report.metrics.contrastCandidates,
+      contrastCandidatesChecked: report.metrics.contrastCandidatesChecked,
       scanDurationMs: report.metrics.scanDurationMs
     } : {},
     counts: report.counts ? {
@@ -277,23 +295,28 @@ async function runScan() {
   setStatus('Waiting briefly for the page to settle, then inspecting the rendered DOM.');
   try { await chrome.storage.session.remove(sessionReportKey(state.tab.id)); } catch (_) {}
   try {
-    if (chrome.permissions?.contains) {
-      try {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
+    } catch (execErr) {
+      const isHostPermErr = /permission|host|access|cannot access/i.test(execErr?.message || '');
+      if (chrome.permissions?.request && isHostPermErr) {
         const u = new URL(state.tab.url);
-        if (['http:', 'https:'].includes(u.protocol)) {
-          const originPattern = `${u.origin}/*`;
-          const hasPerm = await chrome.permissions.contains({ origins: [originPattern] });
-          if (!hasPerm) {
-            const granted = await chrome.permissions.request({ origins: [originPattern] });
-            if (!granted) {
-              setStatus('Permission to inspect this page was not granted. Grant site access or click the extension icon on the tab.', 'error');
-              return;
-            }
-          }
+        const originPattern = `${u.origin}/*`;
+        let granted = false;
+        try {
+          granted = await chrome.permissions.request({ origins: [originPattern] });
+        } catch (permErr) {
+          throw new Error(`Permission request failed: ${permErr?.message || 'unknown error'}`);
         }
-      } catch (_) {}
+        if (!granted) {
+          setStatus('Permission to inspect this page was not granted. Grant site access or click the extension icon on the tab.', 'error');
+          return;
+        }
+        await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
+      } else {
+        throw execErr;
+      }
     }
-    await chrome.scripting.executeScript({ target: { tabId: state.tab.id }, files: ['privacy.js', 'scanner.js'] });
     const response = await chrome.tabs.sendMessage(scanTab.id, { type: 'LOCAL_WEB_QA_SCAN' });
     if (scanEpoch !== contextEpoch || state.tab?.id !== scanTab.id) return;
     if (!response || !response.ok || !response.report) throw new Error(response?.error || 'The scanner did not return a report. Try reloading the page.');
@@ -467,7 +490,8 @@ async function saveBaseline() {
         title: safeTextForSharing(f.title),
         category: f.category,
         severity: f.severity,
-        selector: safeSelectorForSharing(f.selector)
+        selector: safeSelectorForSharing(f.selector),
+        targetKey: stableFindingKey(f)
       }))
     };
     await chrome.storage.local.set({ [key]: baseline });

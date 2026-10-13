@@ -42,15 +42,70 @@
     return new Set(decoded).size >= 16;
   }
 
+  function isLuhnValid(digitsStr) {
+    const digits = String(digitsStr || '').replace(/\D/g, '');
+    if (digits.length < 13 || digits.length > 19) return false;
+    let sum = 0;
+    let shouldDouble = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let digit = parseInt(digits.charAt(i), 10);
+      if (shouldDouble) {
+        digit *= 2;
+        if (digit > 9) digit -= 9;
+      }
+      sum += digit;
+      shouldDouble = !shouldDouble;
+    }
+    return sum % 10 === 0;
+  }
+
   function safeTextForSharing(value) {
-    return String(value ?? '')
-      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email omitted]')
-      .replace(/(?<!\d{4}-)(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)[-.\s]?|\b)\d{3}[-.\s]\d{3}[-.\s]?\d{4}\b/g, '[number omitted]')
-      .replace(/\b(?:Bearer\s+[A-Za-z0-9._~+/-]+=*|[A-Za-z0-9_-]{40,})\b/g, token => {
-        if (/^Bearer\s+/i.test(token)) return '[opaque token omitted]';
-        if (/[A-Z]/.test(token) && /[a-z]/.test(token) && /\d/.test(token)) return '[opaque token omitted]';
-        return token;
-      });
+    if (!value) return '';
+    let text = String(value);
+
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email omitted]');
+
+    const dates = [];
+    text = text.replace(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/g, m => {
+      dates.push(m);
+      return `__QA_DATE_${dates.length - 1}__`;
+    });
+
+    text = text.replace(/\b(?:\d[ -]?){13,19}\b/g, match => {
+      const digitsOnly = match.replace(/\D/g, '');
+      if (digitsOnly.length >= 13 && digitsOnly.length <= 19 && isLuhnValid(digitsOnly)) {
+        return '[number omitted]';
+      }
+      return match;
+    });
+
+    text = text.replace(/(?:\+\d{1,3}[\s.-]*)?(?:\(?\d{2,5}\)?[\s.-]*)?\d{3,5}[\s.-]?\d{3,5}\b/g, match => {
+      const digitsOnly = match.replace(/\D/g, '');
+      if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
+        return '[number omitted]';
+      }
+      return match;
+    });
+
+    text = text.replace(/\b(?:Bearer\s+[A-Za-z0-9._~+/-]+=*|[A-Za-z0-9_-]{32,})\b/g, token => {
+      if (/^Bearer\s+/i.test(token)) return '[opaque token omitted]';
+      if (/^[a-fA-F0-9]{32,}$/.test(token)) return '[opaque token omitted]';
+      if (token.length >= 40) {
+        if (/\d/.test(token)) {
+          if (token.includes('_') || !token.includes('-')) {
+            return '[opaque token omitted]';
+          }
+          const parts = token.split('-');
+          if (parts.some(p => /[a-zA-Z]/.test(p) && /\d/.test(p))) {
+            return '[opaque token omitted]';
+          }
+        }
+      }
+      return token;
+    });
+
+    text = text.replace(/__QA_DATE_(\d+)__/g, (_, idx) => dates[Number(idx)]);
+    return text;
   }
 
   function safePathname(pathname) {

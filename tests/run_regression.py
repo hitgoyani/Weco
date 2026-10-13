@@ -39,13 +39,16 @@ async def main():
           }
           document.body.appendChild(holder);
         }""")
-        await page.evaluate("""Object.defineProperty(window.chrome, 'runtime', {
-          value: { onMessage: {
-            _listeners: [],
-            addListener(fn) { this._listeners.push(fn); },
-            removeListener(fn) { this._listeners = this._listeners.filter(item => item !== fn); }
-          } }, configurable: true
-        });""")
+        await page.evaluate("""(() => {
+          window.chrome = window.chrome || {};
+          Object.defineProperty(window.chrome, 'runtime', {
+            value: { onMessage: {
+              _listeners: [],
+              addListener(fn) { this._listeners.push(fn); },
+              removeListener(fn) { this._listeners = this._listeners.filter(item => item !== fn); }
+            } }, configurable: true
+          });
+        })()""")
         await page.add_script_tag(path=str(ROOT / "privacy.js"))
         await page.add_script_tag(path=str(ROOT / "scanner.js"))
         result = await page.evaluate("""async () => await new Promise(resolve =>
@@ -139,7 +142,32 @@ async def main():
         print(f"PASS: scan took {report['metrics']['scanDurationMs']} ms; {len(report['coverageWarnings'])} coverage note(s).")
         print("PASS: accessible names, fragments, contrast (including oklch), contrast cap/unknown-background skip, headings, tabindex, ARIA roles, overflow, and coverage behavior.")
 
+        # Test: body background-image with an opaque white card containing #aaa text must be flagged for low contrast
+        await page.evaluate("""() => {
+          document.body.style.backgroundImage = 'radial-gradient(circle, #333, #000)';
+          const card = document.createElement('div');
+          card.id = 'opaque-card-over-bg-image';
+          card.style.backgroundColor = '#ffffff';
+          const p = document.createElement('p');
+          p.id = 'card-low-contrast-text';
+          p.style.color = '#aaa';
+          p.textContent = 'Low contrast text on opaque card';
+          card.appendChild(p);
+          document.body.insertBefore(card, document.body.firstChild);
+        }""")
+        bg_card_result = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        assert bg_card_result and bg_card_result.get('ok'), bg_card_result
+        card_contrast = [f for f in bg_card_result['report']['findings'] if f['title'] == 'Possible low text contrast']
+        card_selectors = [f['selector'] for f in card_contrast]
+        assert any('#card-low-contrast-text' in s for s in card_selectors), f'Expected contrast finding on opaque card over background image, got: {card_selectors}'
+        await page.evaluate("""() => {
+          document.body.style.backgroundImage = '';
+          document.getElementById('opaque-card-over-bg-image')?.remove();
+        }""")
+
         # Regression: many earlier DOM findings must not crowd later high-severity issues out of the cap.
+        # Generate 315 duplicate IDs (which caps at 60 and records 255 dropped), plus diverse rules to exceed 300 display limit.
         await page.evaluate("""() => {
           const holder = document.createElement('section');
           holder.id = 'truncation-test-holder';
@@ -148,6 +176,30 @@ async def main():
             el.id = 'deliberate-duplicate-id';
             el.textContent = 'Repeated id test ' + i;
             holder.appendChild(el);
+          }
+          // Add findings across diverse rules (each capped at 60) so total recorded findings exceed DISPLAY_LIMIT = 300
+          for (let i = 0; i < 60; i += 1) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = 'unlabelled-stress-' + i;
+            holder.appendChild(input);
+
+            const img = document.createElement('img');
+            img.id = 'img-stress-' + i;
+            holder.appendChild(img);
+
+            const link = document.createElement('a');
+            link.href = 'https://example.com/stress/' + i;
+            link.id = 'link-stress-' + i;
+            holder.appendChild(link);
+
+            const h = document.createElement('h4');
+            h.id = 'heading-stress-' + i;
+            holder.appendChild(h);
+
+            const btn = document.createElement('button');
+            btn.id = 'empty-btn-stress-' + i;
+            holder.appendChild(btn);
           }
           for (let i = 0; i < 6; i += 1) {
             const button = document.createElement('button');
@@ -163,6 +215,7 @@ async def main():
         assert overflow_report['truncated'] is True, overflow_report['totalFindings']
         assert overflow_report['totalFindings'] > len(overflow_report['findings']) == 300
         assert overflow_report['completeForComparison'] is False
+        assert any('additional Duplicate ID detected findings were not listed individually' in warning for warning in overflow_report['coverageWarnings'])
         high_buttons = [f for f in overflow_report['findings'] if f['title'] == 'Interactive control has no accessible name']
         assert len(high_buttons) >= 6, f'High-severity findings were omitted by truncation: {len(high_buttons)}'
         assert any('omitted from the displayed report' in warning for warning in overflow_report['coverageWarnings'])
