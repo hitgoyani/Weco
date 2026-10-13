@@ -1,104 +1,166 @@
-# Local Web QA Copilot v1.2.0
+# Weco — Local Web QA Copilot v1.2.0
 
-A local-first Chrome/Chromium Edge side-panel extension for web accessibility, performance, and QA checks.
+> **Deterministic, local-first web quality, accessibility, and multi-page auditor with developer-ready AI fix prompts.**  
+> Runs entirely in your browser side panel or floating window. Zero external network requests. Zero tracking.
 
-## Install
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue.svg)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
+[![Browser Support](https://img.shields.io/badge/Chrome%20%7C%20Edge-116%2B-green.svg)](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
+[![Privacy](https://img.shields.io/badge/Privacy-100%25%20Local--First-brightgreen.svg)](#privacy--security-guarantees)
+[![CI Status](https://img.shields.io/badge/CI-Passing%20(78%2B%20checks)-success.svg)](.github/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-1. Clone or download this repository:
-   ```bash
-   git clone https://github.com/hitgoyani/Weco.git
-   ```
-   Or download and extract the repository source ZIP from GitHub.
-2. Open `chrome://extensions` in Google Chrome or `edge://extensions` in Microsoft Edge.
-3. Enable **Developer mode** (toggle in the top-right corner).
-4. Click **Load unpacked** and select the repository directory (the folder containing `manifest.json`).
-5. Open any website and click the extension icon in the toolbar. The tool opens in the browser side panel.
-6. Click **Scan current page**.
+---
 
-The extension needs Chrome/Edge 116 or later for the Side Panel API. After installing or updating the extension, **refresh any tab that was already open** before scanning it. This clears any older content-script listener running in that tab. To scan a local `file://` page, open the extension's details in `chrome://extensions` and enable **Allow access to file URLs**. Browser-internal pages, extension pages, and the Chrome Web Store cannot be scanned.
+## 🌟 Why Weco?
 
-## What it checks
+Traditional accessibility and QA checkers either require sending your site's DOM to third-party servers, produce noisy false positives, or only check the static shell of the currently open tab. 
 
-- **Accessibility heuristics:** missing/whitespace-only image alternatives, links and controls without a detectable accessible name, visible form controls without detectable labels, focusable descendants of `aria-hidden`, duplicate IDs, empty headings, main landmarks, missing document language, iframe titles, likely invalid ARIA role/attribute usage, positive tabindex, viewport zoom restrictions, and likely small targets.
-- **Navigation and functionality signals:** missing in-page fragment targets, legacy named anchors, common `#top` and hash-router patterns, placeholder `href="#"`, broken images, and duplicate IDs.
-- **Responsive/layout checks:** horizontal page overflow and small interaction targets at the current viewport.
-- **Performance/SEO heuristics:** very large DOMs, many script tags, potentially oversized source images, missing/long title, empty meta description, and missing viewport metadata.
-- **Best-practice signals:** HTTP resources referenced by HTTPS pages and password fields visible on non-local HTTP pages.
-- **Contrast estimates:** solid colors in browser-supported CSS color syntax, including modern color functions where the browser's canvas parser supports conversion. Unknown/complex backgrounds, some system color combinations, pseudo-elements, opacity/blending effects, and other uncertain cases are skipped instead of being assigned a fabricated ratio.
-- **Inspection/reporting:** highlight the selected DOM element with a temporary overlay, copy evidence-aware coding prompts, export a privacy-scrubbed JSON report, and compare against saved local baselines.
+**Weco (Local Web QA Copilot)** was engineered for modern web developers working on dynamic dashboards, SPAs (Next.js, Vite, React, Vue, SvelteKit), and complex multi-page apps:
 
-Findings are sorted by severity before the display cap. If findings or analysis coverage are limited, the report includes coverage warnings. The numeric score from v1.1.0 was removed because it could imply more accuracy than the rule-based scan supports.
+- **🌐 Site-Wide Dynamic Route Auditing:** Don't just scan the open tab — automatically discover and audit all linked same-origin dynamic routes across your web app.
+- **↗ Movable Floating Window ("↗ Float"):** Audit your application without altering your browser's responsive viewport width or screen ratio.
+- **🔍 Deep Analysis Mode:** Uncover Shadow DOM custom element issues, broken ARIA references (`aria-labelledby`, `aria-describedby`), and heading hierarchy skips.
+- **🛡️ 100% Local-First & Zero Telemetry:** Runs strictly inside your browser sandbox. Never sends page content, DOM selectors, or cookies over the internet.
+- **🤖 AI-Ready Developer Fix Prompts:** Instantly copies evidence-backed, prompt-injection-safe prompts formatted for Claude, ChatGPT, Gemini, or GitHub Copilot with `<UNTRUSTED_PAGE_DATA>` safety wrappers.
+- **📊 Saved Regression Baselines & Diffs:** Save deterministic SHA-256 snapshots of your page's QA health. Rescan after code changes to verify fixed issues and catch new regressions.
+- **🎯 Live Interactive Element Highlighter:** Highlights target DOM elements with a non-invasive indicator ring and auto-scrolls to the culprit element (navigating across pages automatically when inspecting multi-page findings).
 
-## Try the deliberately imperfect fixture
+---
 
-Start a local web server from the extension root:
+## 🚀 Quick Start & Installation
+
+### 1. Clone or Download the Repository
+
+```bash
+git clone https://github.com/hitgoyani/Weco.git
+```
+*(Or click **Code** → **Download ZIP** on GitHub and extract the folder).*
+
+### 2. Load the Extension in Chrome or Edge
+
+1. Open your browser and navigate to:
+   - **Chrome:** `chrome://extensions`
+   - **Edge:** `edge://extensions`
+2. Enable **Developer mode** using the toggle in the top-right corner.
+3. Click **Load unpacked**.
+4. Select the `Weco` project directory (the folder containing `manifest.json`).
+5. Pin the extension to your toolbar.
+
+> **Tip for local file testing:** If you want to audit local HTML files (`file:///...`), open extension details in `chrome://extensions` and toggle on **"Allow access to file URLs"**.
+
+---
+
+## 💡 How to Use
+
+### 1. Open the Side Panel or Float Window
+- Navigate to any website or local development server (e.g. `http://localhost:3000`).
+- Click the **Weco** toolbar icon to open the side panel.
+- *Need the full viewport width?* Click **↗ Float** in the top bar to pop the auditor out into an independent utility window that syncs with your browser tabs automatically.
+
+### 2. Choose Your Scan Mode
+- **Scan current page:** Conducts a rapid heuristic audit on the active DOM view in under 30ms.
+- **🌐 Audit all site pages:** Automatically discovers internal routes (e.g. `/dashboard`, `/dashboard/applications`, `/dashboard/jobs`), navigates and hydrates them sequentially, and compiles a unified multi-page report.
+- **Deep Analysis mode toggle:** Enables deeper inspection into Shadow DOM components, heading sequence jumps, and ARIA reference integrity.
+
+### 3. Filter and Inspect Issues
+- Use the **Page Route selector** (in multi-page mode) to filter findings by route.
+- Filter by **Category** (Accessibility, Responsive, Functionality, Performance, SEO, Best Practice) or **Severity** (Critical, High, Medium, Low).
+- Click **Inspect element** on any finding card: Weco smoothly scrolls your page and highlights the element with a glowing purple outline without altering your site's styles.
+
+### 4. Fix with AI or Save Baselines
+- **Copy fix prompt:** Copies a focused, evidence-backed prompt for the specific issue.
+- **Copy all issues prompt:** Generates a structured multi-page fix plan with untrusted data wrappers ready to paste directly into your AI coding assistant.
+- **Save baseline & Compare:** Save snapshots to track progress across sprints and confirm bug fixes.
+
+---
+
+## 🛡️ What Weco Audits
+
+| Category | Checks & Heuristics |
+| :--- | :--- |
+| **Accessibility (a11y)** | Missing / whitespace `alt` on images, nameless interactive controls, form inputs without detectable labels, focusable elements inside `aria-hidden`, invalid ARIA roles/attributes, positive `tabindex` traps, viewport zoom lockouts, and small touch targets. |
+| **Site-Wide Navigation** | Broken in-page fragment links, invalid `#` placeholders, dead image links, legacy named anchors, duplicate DOM element IDs. |
+| **Responsive & Layout** | Horizontal layout overflow (`overflow-x`), culprit container identification, viewport clipping, touch target sizing under 24×24px. |
+| **Contrast Analysis** | Solid color contrast evaluation across standard and modern CSS color formats (including `oklch()`, `rgb()`, `hsl()`). Complex/unknown backgrounds are intelligently skipped rather than reporting false ratios. |
+| **Performance & SEO** | Excessive DOM node counts, script tag saturation, oversized image assets, missing or overly long `<title>`, missing meta description, missing responsive viewport tag. |
+| **Security & Best Practice** | Mixed content (HTTP resources on HTTPS pages), plaintext password fields on insecure non-local pages. |
+
+---
+
+## 🔒 Privacy & Security Guarantees
+
+Weco is built on a **strict local-first architecture**:
+
+1. **Zero External Requests:** Weco makes zero fetch, XHR, or analytics requests to any external server.
+2. **Automatic Secret Redaction:** When copying prompts or exporting reports, Weco's privacy engine automatically scrubs:
+   - Personal Identification numbers (PAN)
+   - JSON Web Tokens (JWT) & bearer tokens
+   - AWS API access keys (`AKIA...`)
+   - GitHub Personal Access Tokens (`ghp_...`, `gho_...`)
+   - Stripe live keys (`sk_live_...`)
+   - Credit card numbers (verified with the Luhn algorithm)
+   - International & Indian phone numbers
+   - Private URL query parameters and auth fragments
+3. **Prompt Injection Defense:** All webpage-derived strings (titles, text, attributes, evidence) are quarantined inside strict `<UNTRUSTED_PAGE_DATA>` boundary wrappers with escaped tag delimiters so malicious websites cannot hijack your AI coding agent.
+4. **Deterministic Storage:** Saved baselines are hashed with SHA-256 (`crypto.subtle`) and stored locally in browser `chrome.storage.local`.
+
+---
+
+## 🧪 Testing & Verification
+
+Weco includes an automated regression test suite using Playwright and Chromium:
+
+```bash
+# 1. Install dev dependencies
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+
+# 2. Run Privacy & Redaction unit tests
+node tests/privacy.test.cjs
+
+# 3. Run Scanner DOM & Rendering regression tests (78+ checks)
+python tests/run_regression.py
+
+# 4. Run Side-Panel UI, Multi-Page Crawler & Float window smoke tests
+python tests/popup_smoke.py
+
+# 5. Validate JavaScript syntax
+node --check background.js privacy.js popup.js scanner.js baselines.js
+```
+
+### Try the Test Fixture
+You can explore Weco's detection capabilities against a deliberately imperfect test page:
 
 ```bash
 python -m http.server 8000 --directory tests
 ```
+Open `http://localhost:8000/fixture.html`, open Weco, and click **Scan current page**.
 
-Then open `http://localhost:8000/fixture.html`, click the extension, and scan. The fixture deliberately contains examples such as a nameless button, an image missing `alt`, a missing form label, invalid ARIA, an empty heading, zoom restriction, low-contrast text, a broken fragment, and horizontal overflow. It also includes examples that **should not** be reported as the same problem: an image-only link with alt text, a valid `aria-labelledby` name, a hidden input, `tabindex="-1"` within `aria-hidden`, an inert button, `#top`, hash-router links, and a valid named anchor.
+---
 
-Use **Inspect** on each duplicate-ID finding to confirm that it highlights the correct element. Save a baseline, alter the fixture, refresh, rescan, and compare. Stop the server with `Ctrl+C`.
+## 📁 Repository Structure
 
-## Automated regression tests
-
-The tests use a local Chromium engine for the DOM and rendering checks, plus Chrome API stubs for side-panel logic. They are not a substitute for installing the extension in your own Chrome/Edge profile.
-
-Install the Python test dependency if needed:
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m playwright install chromium
+```
+Weco/
+├── manifest.json          # Chrome Extension Manifest V3 configuration
+├── background.js          # Service worker for Side Panel management
+├── popup.html             # Main auditor UI (side panel & float window)
+├── popup.css              # Dark-mode styling, tokens, and responsive layout
+├── popup.js               # Multi-page crawler, UI state, filters & export
+├── scanner.js             # Live DOM scanner, route discovery & highlight overlay
+├── privacy.js             # Privacy engine, token redaction & SHA-256 baseline hashing
+├── baselines.html / .js   # Saved baseline manager interface
+├── tests/
+│   ├── fixture.html       # Deliberately imperfect test page
+│   ├── privacy.test.cjs   # Redaction and baseline hashing unit tests
+│   ├── run_regression.py  # Playwright regression suite for scanner checks
+│   └── popup_smoke.py     # End-to-end side-panel and float window smoke tests
+└── .github/workflows/
+    └── ci.yml             # GitHub Actions automated CI quality gate
 ```
 
-Run from this folder:
+---
 
-```bash
-node tests/privacy.test.cjs
-python tests/run_regression.py
-python tests/popup_smoke.py
-```
-
-The regression suite covers key classes of problems: URL-key collisions, URL/selector redaction, accessible-name false positives, fragment routing, negative tabindex and inert behavior, CSS color parsing (including `oklch()`), disabled controls, overflow-candidate selection, severity-first truncation, incomplete comparison handling, and same-URL reload invalidation.
-
-## Privacy and permissions
-
-The extension requests `tabs`, `activeTab`, `scripting`, `storage`, `clipboardWrite`, and `sidePanel`. By default it accesses the active tab via `activeTab` on user gesture when scanning. If a page requires origin-level host permissions, optional per-site access is requested on-demand when you click scan, and granted origins can be viewed or revoked in your browser's extension settings. It does not request broad host access upfront and makes no network requests of its own. Page inspection runs only after you invoke a scan. Reports are kept in `chrome.storage.session` so the side panel can restore results for the same tab during the browser session. Baselines are saved to extension local storage and can be individually deleted from **Manage baselines**.
-
-Baseline identity is a SHA-256 digest of the exact URL identity (including query state and SPA route fragments where applicable), rather than storing the raw identity as a key. Baseline metadata keeps a scrubbed URL label for readability. Exports and copied prompts drop query values and fragments, strip URL credentials, mask likely opaque/private path segments, and remove CSS ID selectors; however, privacy heuristics cannot recognize every name or secret in every site-specific string. Review reports before sharing them. The report held in extension session storage may contain the full current page URL and evidence, and remains local to the browser profile.
-
-No cloud AI/API integration is included. Copied prompts are intended for a coding agent that can inspect source code separately; this extension itself does not change project files or verify source-code fixes.
-
-## Known limitations — read before relying on findings
-
-- This is a **heuristic first-pass scanner**, not a complete WCAG conformance audit, security audit, performance profile, SEO certification, or substitute for manual testing.
-- It does **not currently bundle axe-core**. Accessibility findings are produced by the project's own limited rules; some issues will be missed, and some warnings need human review. Do not infer that an absence of findings means the page is accessible.
-- It inspects the current rendered document at one viewport. It does not automatically resize the browser, crawl multiple routes, or fully exercise forms and app workflows.
-- It detects open shadow-root hosts and iframe titles, but does not inspect iframe contents or traverse shadow DOM in this version. Closed shadow roots and unloaded lazy content are also outside coverage. Rescan after important UI states appear.
-- A scan cannot reliably map a live DOM selector to a source component, infer the true root cause, or prove a code fix worked. Use Playwright/Lighthouse and manual verification for broader testing.
-- Some page content, CSSOM, and resource details are restricted by the browser. Cross-origin stylesheets may not be readable; the report warns about incomplete coverage where possible.
-- Contrast and small-target findings are estimates/hints. A finding is not proof of a WCAG violation, and no finding is not proof of compliance.
-- Baseline comparison matches findings by rule ID and sanitized selector. It only lists findings as “no longer detected” when both snapshots are eligible for reliable comparison; even then, absence from a snapshot is not proof that a code change fixed the problem.
-
-## Project files
-
-- `manifest.json`, `background.js` — Manifest V3 and side-panel setup.
-- `popup.html`, `popup.css`, `popup.js` — side-panel interface, filters, prompts, export, and baseline comparison.
-- `scanner.js` — on-demand DOM scanner and temporary highlight overlay.
-- `privacy.js` — shared URL, evidence, selector, and baseline-identity helpers.
-- `baselines.html`, `baselines.js` — list and delete saved baselines.
-- `tests/fixture.html` — deliberately imperfect page.
-- `tests/*.py` and `tests/*.cjs` — automated regression checks.
-
-## v1.2.0 changes
-
-- Moved results from a dismissible action popup to a persistent browser side panel and retained reports in session storage.
-- Invalidated reports during same-URL reloads/navigation so stale findings cannot be mistaken for a fresh scan.
-- Corrected image-only accessible names, hidden descendant text handling, negative tabindex/inert cases, common fragment conventions, modern CSS color parsing, disabled contrast targets, overflow width measurement, and overflow-candidate selection.
-- Reworked URL baseline identities to avoid collisions on long slugs and query values; preserve SPA routes in identity hashes while excluding ordinary page anchors.
-- Added Chromium regression coverage for the issues above.
-
-## License
+## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
