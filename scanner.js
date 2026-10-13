@@ -147,8 +147,20 @@
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
   }
 
+  function isAccessibilityExposed(el) {
+    if (!(el instanceof Element) || !el.isConnected) return false;
+    if (!styleVisibleThroughAncestors(el)) return false;
+    for (let node = el; node && node instanceof Element; node = node.parentElement) {
+      if (node.hasAttribute('inert') || node.hasAttribute('hidden')) return false;
+      if ((node.getAttribute('aria-hidden') || '').trim().toLowerCase() === 'true') return false;
+      const s = styleOf(node);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || Number.parseFloat(s.opacity) === 0 || s.contentVisibility === 'hidden') return false;
+    }
+    return true;
+  }
+
   function semanticVisible(el) {
-    if (!(el instanceof Element) || !el.isConnected || !styleVisibleThroughAncestors(el)) return false;
+    if (!isAccessibilityExposed(el)) return false;
     const style = styleOf(el);
     if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
     const rect = el.getBoundingClientRect();
@@ -185,7 +197,17 @@
       if (node.tagName === 'INPUT') {
         const type = (node.getAttribute('type') || 'text').toLowerCase();
         if (['button', 'submit', 'reset'].includes(type)) result += ` ${node.value || (type === 'submit' ? 'Submit' : type === 'reset' ? 'Reset' : '')}`;
-        if (type === 'image') result += ` ${node.getAttribute('alt') || ''}`;
+        else if (type === 'image') result += ` ${node.getAttribute('alt') || ''}`;
+        else result += ` ${node.value || ''}`;
+        return;
+      }
+      if (node.tagName === 'TEXTAREA') {
+        result += ` ${node.value || ''}`;
+        return;
+      }
+      if (node.tagName === 'SELECT') {
+        const selected = Array.from(node.selectedOptions || []).map(o => o.text).join(' ');
+        result += ` ${selected || node.value || ''}`;
         return;
       }
       if (node.namespaceURI === 'http://www.w3.org/2000/svg') {
@@ -229,7 +251,17 @@
       if (node.tagName === 'INPUT') {
         const type = (node.getAttribute('type') || 'text').toLowerCase();
         if (['button', 'submit', 'reset'].includes(type)) result += ` ${node.value || (type === 'submit' ? 'Submit' : type === 'reset' ? 'Reset' : '')}`;
-        if (type === 'image') result += ` ${node.getAttribute('alt') || ''}`;
+        else if (type === 'image') result += ` ${node.getAttribute('alt') || ''}`;
+        else result += ` ${node.value || ''}`;
+        return;
+      }
+      if (node.tagName === 'TEXTAREA') {
+        result += ` ${node.value || ''}`;
+        return;
+      }
+      if (node.tagName === 'SELECT') {
+        const selected = Array.from(node.selectedOptions || []).map(o => o.text).join(' ');
+        result += ` ${selected || node.value || ''}`;
         return;
       }
       for (const child of node.childNodes) walk(child, false);
@@ -246,18 +278,28 @@
     return labels.join(' ').trim();
   }
 
+  function hasValidAssociatedLabel(control) {
+    if (!control || !control.labels) return false;
+    return Array.from(control.labels).some(label => {
+      if (!isAccessibilityExposed(label)) return false;
+      const text = visibleNameText(label) || (label.getAttribute('aria-label') || '').trim() || labelledByText(label);
+      return Boolean(text);
+    });
+  }
+
   function hasAccessibleName(el) {
-    if (hasNonEmptyAttr(el, 'aria-label') || labelledByText(el) || hasNonEmptyAttr(el, 'title')) return true;
+    if (hasNonEmptyAttr(el, 'aria-label') || labelledByText(el)) return true;
     if (el instanceof HTMLInputElement) {
       const type = (el.type || 'text').toLowerCase();
       if (type === 'image') return hasNonEmptyAttr(el, 'alt');
       if (type === 'submit' || type === 'reset') return true; // User-agent default value supplies a name.
       if (type === 'button') return !!String(el.value || '').trim();
-      if (el.labels && Array.from(el.labels).some(label => visible(label) && (visibleNameText(label) || hasNonEmptyAttr(label, 'aria-label')))) return true;
+      if (hasValidAssociatedLabel(el)) return true;
     }
     if (el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) {
-      if (el.labels && Array.from(el.labels).some(label => visible(label) && (visibleNameText(label) || hasNonEmptyAttr(label, 'aria-label')))) return true;
+      if (hasValidAssociatedLabel(el)) return true;
     }
+    if (hasNonEmptyAttr(el, 'title')) return true;
     return !!visibleNameText(el);
   }
 
@@ -265,13 +307,18 @@
     return PRIVACY.safeResourceUrl(raw, location.href);
   }
 
+  function ruleIdFromTitle(title) {
+    return String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'general-issue';
+  }
+
   function add(el, category, severity, title, description, evidence, recommendation, confidence = 'high', extra = {}) {
     const selector = el ? selectorFor(el) : 'html';
-    const signature = `${category}|${title}|${selector}`;
+    const ruleId = extra.ruleId || ruleIdFromTitle(title);
+    const signature = `${ruleId}|${title}|${selector}`;
     if (seen.has(signature)) return;
     seen.add(signature);
     findings.push({
-      id: `f-${findings.length + 1}`, category, severity, title, selector,
+      id: `f-${findings.length + 1}`, ruleId, category, severity, title, selector,
       element: el ? `<${el.tagName.toLowerCase()}>` : 'document',
       description, evidence: String(evidence || '').slice(0, 260), recommendation, confidence, ...extra
     });
@@ -393,10 +440,11 @@
     const addCandidate = (el, raw, sourceKind) => {
       if (raw && isHttpUrl(raw)) candidates.push({ el: el || document.documentElement, raw, sourceKind });
     };
-    const resourceTags = new Set(['IMG', 'SCRIPT', 'IFRAME', 'AUDIO', 'VIDEO', 'SOURCE', 'TRACK', 'EMBED', 'OBJECT']);
-    for (const el of document.querySelectorAll('[src],[href],[data],[action],[srcset]')) {
+    const resourceTags = new Set(['IMG', 'SCRIPT', 'IFRAME', 'AUDIO', 'VIDEO', 'SOURCE', 'TRACK', 'EMBED', 'OBJECT', 'INPUT']);
+    for (const el of document.querySelectorAll('[src],[href],[data],[action],[srcset],[poster]')) {
       const tag = el.tagName;
       if (el.hasAttribute('src') && resourceTags.has(tag)) addCandidate(el, el.getAttribute('src'), 'src');
+      if (el.hasAttribute('poster') && tag === 'VIDEO') addCandidate(el, el.getAttribute('poster'), 'video poster');
       if (el.hasAttribute('data') && tag === 'OBJECT') addCandidate(el, el.getAttribute('data'), 'data');
       if (el.hasAttribute('action') && tag === 'FORM') addCandidate(el, el.getAttribute('action'), 'form action');
       if (el.hasAttribute('href')) {
@@ -478,28 +526,51 @@
   }
 
   function detectAriaAndSemantics(all) {
-    const knownRoles = new Set(('alert alertdialog application article associationlist associationlistitem banner blockquote button caption cell checkbox code columnheader combobox command complementary contentinfo definition deletion dialog directory document emphasis feed figure form generic grid gridcell group heading img insertion link list listbox listitem log main marquee math menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region roletype row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong subscript superscript switch tab table tablist tabpanel term textbox timer toolbar tooltip tree treegrid treeitem comment mark suggestion graphics-document graphics-object graphics-symbol doc-abstract doc-acknowledgments doc-afterword doc-appendix doc-backlink doc-biblioentry doc-bibliography doc-bookmark doc-chapter doc-colophon doc-conclusion doc-cover doc-credit doc-credits doc-dedication doc-endnote doc-endnotes doc-epigraph doc-epilogue doc-errata doc-example doc-footnote doc-foreword doc-glossary doc-index doc-introduction doc-noteref doc-notice doc-pagebreak doc-pagefooter doc-pageheader doc-pagelist doc-part doc-preface doc-prologue doc-pullquote doc-qna doc-subtitle doc-tip doc-toc').split(/\s+/));
+    const abstractRoles = new Set([
+      'command', 'composite', 'input', 'landmark', 'range', 'roletype',
+      'section', 'sectionhead', 'select', 'structure', 'widget', 'window'
+    ]);
+    const authorAssignableRoles = new Set(('alert alertdialog application article associationlist associationlistitem banner blockquote button caption cell checkbox code columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure form generic grid gridcell group heading img insertion link list listbox listitem log main marquee math menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong subscript superscript switch tab table tablist tabpanel term textbox timer toolbar tooltip tree treegrid treeitem comment mark suggestion graphics-document graphics-object graphics-symbol doc-abstract doc-acknowledgments doc-afterword doc-appendix doc-backlink doc-biblioentry doc-bibliography doc-bookmark doc-chapter doc-colophon doc-conclusion doc-cover doc-credit doc-credits doc-dedication doc-endnote doc-endnotes doc-epigraph doc-epilogue doc-errata doc-example doc-footnote doc-foreword doc-glossary doc-index doc-introduction doc-noteref doc-notice doc-pagebreak doc-pagefooter doc-pageheader doc-pagelist doc-part doc-preface doc-prologue doc-pullquote doc-qna doc-subtitle doc-tip doc-toc').split(/\s+/));
     const knownAria = new Set(('aria-activedescendant aria-atomic aria-autocomplete aria-braillelabel aria-brailleroledescription aria-busy aria-checked aria-colcount aria-colindex aria-colindextext aria-colspan aria-controls aria-current aria-describedby aria-description aria-details aria-disabled aria-dropeffect aria-errormessage aria-expanded aria-flowto aria-grabbed aria-haspopup aria-hidden aria-invalid aria-keyshortcuts aria-label aria-labelledby aria-level aria-live aria-modal aria-multiline aria-multiselectable aria-orientation aria-owns aria-placeholder aria-posinset aria-pressed aria-readonly aria-relevant aria-required aria-roledescription aria-rowcount aria-rowindex aria-rowindextext aria-rowspan aria-selected aria-setsize aria-sort aria-valuemax aria-valuemin aria-valuenow aria-valuetext').split(/\s+/));
     const booleanAria = new Set(['aria-atomic', 'aria-busy', 'aria-disabled', 'aria-expanded', 'aria-grabbed', 'aria-hidden', 'aria-modal', 'aria-multiline', 'aria-multiselectable', 'aria-readonly', 'aria-required', 'aria-selected']);
+    const tokenAriaAllowed = {
+      'aria-haspopup': new Set(['false', 'true', 'menu', 'listbox', 'tree', 'grid', 'dialog']),
+      'aria-invalid': new Set(['false', 'true', 'grammar', 'spelling']),
+      'aria-live': new Set(['off', 'polite', 'assertive']),
+      'aria-orientation': new Set(['horizontal', 'vertical', 'undefined']),
+      'aria-autocomplete': new Set(['none', 'inline', 'list', 'both']),
+      'aria-current': new Set(['page', 'step', 'location', 'date', 'time', 'true', 'false', '']),
+      'aria-sort': new Set(['none', 'ascending', 'descending', 'other']),
+      'aria-pressed': new Set(['true', 'false', 'mixed', 'undefined']),
+      'aria-checked': new Set(['true', 'false', 'mixed', 'undefined'])
+    };
     for (const el of all) {
       const role = (el.getAttribute('role') || '').trim();
       if (role) {
         const tokens = role.toLowerCase().split(/\s+/).filter(Boolean);
-        if (!tokens.some(token => knownRoles.has(token))) add(el, 'accessibility', 'medium', 'Unknown or invalid ARIA role', 'The explicit role value is not recognized by this scanner. Role support can vary by browser and accessibility API, so confirm before changing it.', `role attribute contains ${tokens.length ? 'unrecognized role token(s)' : 'no role token'}.`, 'Use a valid WAI-ARIA role appropriate for this element, or remove an unnecessary role.', 'medium');
+        const hasAbstract = tokens.find(token => abstractRoles.has(token));
+        if (hasAbstract) {
+          add(el, 'accessibility', 'high', 'Abstract ARIA role must not be used in content', 'Abstract roles (such as command, roletype, structure, widget) are defined in the WAI-ARIA ontology for classification and must not be assigned to elements by authors.', `role attribute contains abstract role "${hasAbstract}".`, 'Replace with an author-assignable ARIA role (such as button, menuitem, or region) or remove the role attribute.', 'high', { ruleId: 'aria-role-abstract' });
+        } else if (!tokens.some(token => authorAssignableRoles.has(token))) {
+          add(el, 'accessibility', 'medium', 'Unknown or invalid ARIA role', 'The explicit role value is not recognized by this scanner. Role support can vary by browser and accessibility API, so confirm before changing it.', `role attribute contains ${tokens.length ? 'unrecognized role token(s)' : 'no role token'}.`, 'Use a valid WAI-ARIA role appropriate for this element, or remove an unnecessary role.', 'medium', { ruleId: 'aria-role-invalid' });
+        }
       }
       for (const attr of Array.from(el.attributes || [])) {
         if (!attr.name.toLowerCase().startsWith('aria-')) continue;
         const name = attr.name.toLowerCase();
         const value = attr.value.trim().toLowerCase();
         if (!knownAria.has(name)) {
-          add(el, 'accessibility', 'medium', 'Unrecognized ARIA attribute', 'The attribute name is not in the standard ARIA attribute set used by this scanner.', `Attribute name: ${name}.`, 'Check the attribute spelling and use a valid WAI-ARIA attribute.', 'medium');
+          add(el, 'accessibility', 'medium', 'Unrecognized ARIA attribute', 'The attribute name is not in the standard ARIA attribute set used by this scanner.', `Attribute name: ${name}.`, 'Check the attribute spelling and use a valid WAI-ARIA attribute.', 'medium', { ruleId: 'aria-attr-unknown' });
           continue;
         }
-        if (booleanAria.has(name) && !['true', 'false'].includes(value)) add(el, 'accessibility', 'medium', 'Invalid boolean ARIA value', `${name} expects a true/false value.`, `Attribute ${name} has a non-boolean value.`, 'Use aria attribute values exactly as specified by WAI-ARIA.', 'medium');
-        if (name === 'aria-current' && !['page', 'step', 'location', 'date', 'time', 'true', 'false', ''].includes(value)) add(el, 'accessibility', 'low', 'Invalid aria-current value', 'The value should be a supported token or boolean.', `aria-current value is not a known token.`, 'Use page, step, location, date, time, true, or false.', 'low');
+        if (booleanAria.has(name) && !['true', 'false'].includes(value)) {
+          add(el, 'accessibility', 'medium', 'Invalid boolean ARIA value', `${name} expects a true/false value.`, `Attribute ${name} has a non-boolean value.`, 'Use aria attribute values exactly as specified by WAI-ARIA.', 'medium', { ruleId: 'aria-attr-invalid' });
+        } else if (name in tokenAriaAllowed && !tokenAriaAllowed[name].has(value)) {
+          add(el, 'accessibility', 'medium', 'Invalid ARIA attribute value', `The value "${attr.value}" is not a recognized token for ${name}.`, `Attribute ${name} has an unrecognized value "${attr.value}".`, `Use one of the allowed tokens: ${Array.from(tokenAriaAllowed[name]).filter(Boolean).join(', ')}.`, 'medium', { ruleId: 'aria-attr-invalid' });
+        }
       }
       const rawTabIndex = el.getAttribute('tabindex');
-      if (rawTabIndex !== null && Number(rawTabIndex) > 0) add(el, 'accessibility', 'medium', 'Positive tabindex disrupts focus order', 'Positive tabindex values can create an unexpected navigation order as the page changes.', 'A positive tabindex value is present.', 'Use tabindex="0" for normal sequential focus or tabindex="-1" for programmatic focus, and rely on DOM order.', 'medium');
+      if (rawTabIndex !== null && Number(rawTabIndex) > 0) add(el, 'accessibility', 'medium', 'Positive tabindex disrupts focus order', 'Positive tabindex values can create an unexpected navigation order as the page changes.', 'A positive tabindex value is present.', 'Use tabindex="0" for normal sequential focus or tabindex="-1" for programmatic focus, and rely on DOM order.', 'medium', { ruleId: 'aria-tabindex-positive' });
     }
   }
 
@@ -518,60 +589,58 @@
     const descriptionMeta = document.querySelector('meta[name="description"]');
     const coverageWarnings = [];
 
-    if (!lang) add(document.documentElement, 'accessibility', 'medium', 'Document language is missing', 'Screen readers use the document language to select pronunciation rules.', '<html> has no non-empty lang attribute.', 'Set the correct language, for example <html lang="en"> or the appropriate language code.');
-    if (!title) add(document.querySelector('head') || document.documentElement, 'seo', 'high', 'Page title is missing', 'The document has no useful title for browser tabs, bookmarks, and search results.', 'document.title is empty.', 'Add a concise, unique <title> that describes this page.');
-    if (title.length > 65) add(document.querySelector('title') || document.documentElement, 'seo', 'low', 'Page title may be too long', 'Title length alone does not determine SEO quality.', `Title length: ${title.length} characters.`, 'Consider a concise title that puts the important words first.', 'low');
-    if (!descriptionMeta || !hasNonEmptyAttr(descriptionMeta, 'content')) add(document.querySelector('head') || document.documentElement, 'seo', 'low', 'Meta description is missing or empty', 'A description may help search engines summarize the page, although search engines can choose other text.', 'No non-empty meta description content found.', 'Add a specific description for this page; avoid duplicates across important pages.', 'medium');
-    if (!viewportMeta) add(document.querySelector('head') || document.documentElement, 'responsive', 'medium', 'Viewport meta tag is missing', 'Mobile browsers may use a desktop-sized layout viewport.', 'No meta[name="viewport"] found.', 'For a responsive page, add <meta name="viewport" content="width=device-width, initial-scale=1">.');
+    if (!lang) add(document.documentElement, 'accessibility', 'medium', 'Document language is missing', 'Screen readers use the document language to select pronunciation rules.', '<html> has no non-empty lang attribute.', 'Set the correct language, for example <html lang="en"> or the appropriate language code.', 'high', { ruleId: 'lang-missing' });
+    if (!title) add(document.querySelector('head') || document.documentElement, 'seo', 'high', 'Page title is missing', 'The document has no useful title for browser tabs, bookmarks, and search results.', 'document.title is empty.', 'Add a concise, unique <title> that describes this page.', 'high', { ruleId: 'meta-title-missing' });
+    if (title.length > 65) add(document.querySelector('title') || document.documentElement, 'seo', 'low', 'Page title may be too long', 'Title length alone does not determine SEO quality.', `Title length: ${title.length} characters.`, 'Consider a concise title that puts the important words first.', 'low', { ruleId: 'meta-title-long' });
+    if (!descriptionMeta || !hasNonEmptyAttr(descriptionMeta, 'content')) add(document.querySelector('head') || document.documentElement, 'seo', 'low', 'Meta description is missing or empty', 'A description may help search engines summarize the page, although search engines can choose other text.', 'No non-empty meta description content found.', 'Add a specific description for this page; avoid duplicates across important pages.', 'medium', { ruleId: 'meta-desc-missing' });
+    if (!viewportMeta) add(document.querySelector('head') || document.documentElement, 'responsive', 'medium', 'Viewport meta tag is missing', 'Mobile browsers may use a desktop-sized layout viewport.', 'No meta[name="viewport"] found.', 'For a responsive page, add <meta name="viewport" content="width=device-width, initial-scale=1">.', 'high', { ruleId: 'meta-viewport-missing' });
     if (viewportMeta) {
       const content = (viewportMeta.getAttribute('content') || '').toLowerCase();
       if (/user-scalable\s*=\s*no\b/.test(content) || /maximum-scale\s*=\s*1(?:\.0+)?(?:\s|,|$)/.test(content)) {
-        add(viewportMeta, 'accessibility', 'medium', 'Viewport setting may prevent zoom', 'Restricting user zoom can make content difficult or impossible to read for some users.', 'Viewport metadata contains user-scalable=no or maximum-scale=1.', 'Allow pinch zoom; normally use width=device-width, initial-scale=1 without a restrictive maximum scale.');
+        add(viewportMeta, 'accessibility', 'medium', 'Viewport setting may prevent zoom', 'Restricting user zoom can make content difficult or impossible to read for some users.', 'Viewport metadata contains user-scalable=no or maximum-scale=1.', 'Allow pinch zoom; normally use width=device-width, initial-scale=1 without a restrictive maximum scale.', 'high', { ruleId: 'meta-viewport-zoom' });
       }
     }
-    if (!Array.from(document.querySelectorAll('main, [role="main"]')).some(semanticVisible)) add(document.body || document.documentElement, 'accessibility', 'low', 'Main landmark was not found', 'A main landmark helps assistive-technology users jump to the primary page content; some compact pages intentionally omit one.', 'No <main> or role="main" found.', 'Wrap the primary content in one meaningful <main> landmark when appropriate.', 'low');
+    if (!Array.from(document.querySelectorAll('main, [role="main"]')).some(semanticVisible)) add(document.body || document.documentElement, 'accessibility', 'low', 'Main landmark was not found', 'A main landmark helps assistive-technology users jump to the primary page content; some compact pages intentionally omit one.', 'No exposed <main> or role="main" landmark found.', 'Wrap the primary content in one meaningful <main> landmark when appropriate.', 'low', { ruleId: 'landmark-main-missing' });
 
     for (const img of document.querySelectorAll('img')) {
       const alt = img.getAttribute('alt');
       if (!img.hasAttribute('alt') || (alt !== '' && !alt.trim())) {
-        add(img, 'accessibility', 'high', 'Image alternative text is missing or whitespace-only', 'Informative images need meaningful alternatives; decorative images should use exactly alt="".', `Image source: ${safeResourceUrl(img.currentSrc || img.src || '(unknown)')}`, 'Add meaningful alt text when the image conveys information, or exactly alt="" when it is decorative.');
+        add(img, 'accessibility', 'high', 'Image alternative text is missing or whitespace-only', 'Informative images need meaningful alternatives; decorative images should use exactly alt="".', `Image source: ${safeResourceUrl(img.currentSrc || img.src || '(unknown)')}`, 'Add meaningful alt text when the image conveys information, or exactly alt="" when it is decorative.', 'high', { ruleId: 'image-alt-missing' });
       }
       const rect = img.getBoundingClientRect();
       const offscreenLazy = img.loading === 'lazy' && (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > document.documentElement.clientWidth);
       if (img.complete && img.naturalWidth === 0 && (img.currentSrc || img.src) && !offscreenLazy && !/^data:/i.test(img.currentSrc || img.src)) {
-        add(img, 'functionality', 'medium', 'Image appears to be broken', 'The image completed with no usable intrinsic width. Blocked requests and custom loading patterns can also cause this result.', `Source: ${safeResourceUrl(img.currentSrc || img.src)}`, 'Verify the image URL, response status, file path, permissions, and network/content-security rules.', 'medium');
+        add(img, 'functionality', 'medium', 'Image appears to be broken', 'The image completed with no usable intrinsic width. Blocked requests and custom loading patterns can also cause this result.', `Source: ${safeResourceUrl(img.currentSrc || img.src)}`, 'Verify the image URL, response status, file path, permissions, and network/content-security rules.', 'medium', { ruleId: 'image-broken' });
       }
     }
 
     for (const link of document.querySelectorAll('a[href]')) {
       const label = visibleNameText(link) || (link.getAttribute('aria-label') || '').trim() || labelledByText(link) || (link.title || '').trim();
-      if (visible(link) && !hasAccessibleName(link)) add(link, 'accessibility', 'high', 'Link has no accessible name', 'The link has no detectable visible text or accessible label to explain its destination.', 'The link has no detectable accessible name; destination details are omitted for privacy.', 'Add descriptive link text or a non-empty aria-label/aria-labelledby reference.');
+      if (visible(link) && !hasAccessibleName(link)) add(link, 'accessibility', 'high', 'Link has no accessible name', 'The link has no detectable visible text or accessible label to explain its destination.', 'The link has no detectable accessible name; destination details are omitted for privacy.', 'Add descriptive link text or a non-empty aria-label/aria-labelledby reference.', 'high', { ruleId: 'link-name-missing' });
       const href = (link.getAttribute('href') || '').trim();
-      if (href === '#') add(link, 'functionality', 'low', 'Link points only to #', 'A placeholder link can jump to the top and may indicate unfinished navigation, though applications sometimes intercept it.', `Link text length: ${label.length} character(s).`, 'Use a real destination or a button for an action; if intentionally intercepted, verify keyboard and screen-reader behavior.', 'low');
+      if (href === '#') add(link, 'functionality', 'low', 'Link points only to #', 'A placeholder link can jump to the top and may indicate unfinished navigation, though applications sometimes intercept it.', `Link text length: ${label.length} character(s).`, 'Use a real destination or a button for an action; if intentionally intercepted, verify keyboard and screen-reader behavior.', 'low', { ruleId: 'link-placeholder' });
       if (href.startsWith('#') && href.length > 1 && !isHashRouterFragment(href)) {
         let targetId = href.slice(1);
         try { targetId = decodeURIComponent(targetId); } catch (_) {}
-        if (!fragmentTargetExists(targetId)) add(link, 'functionality', 'medium', 'In-page link target was not found', 'This fragment does not match an element ID or legacy named anchor in the current document.', 'A fragment target was not found; the raw fragment is omitted for privacy.', 'Correct the fragment target or restore the missing destination.');
+        if (!fragmentTargetExists(targetId)) add(link, 'functionality', 'medium', 'In-page link target was not found', 'This fragment does not match an element ID or legacy named anchor in the current document.', 'A fragment target was not found; the raw fragment is omitted for privacy.', 'Correct the fragment target or restore the missing destination.', 'medium', { ruleId: 'link-fragment-broken' });
       }
-      if (link.target === '_blank' && !/\bnoopener\b/i.test(link.rel) && !/\bnoreferrer\b/i.test(link.rel)) add(link, 'best-practice', 'low', 'New-tab link lacks explicit rel protection', 'Modern browsers generally apply noopener by default, so this is a compatibility/hardening hint rather than proof of a vulnerability.', 'A target="_blank" link has no explicit noopener/noreferrer token.', 'Consider rel="noopener" for clarity and compatibility; add noreferrer only when suppressing the referrer is desired.', 'low');
+      if (link.target === '_blank' && !/\bnoopener\b/i.test(link.rel) && !/\bnoreferrer\b/i.test(link.rel)) add(link, 'best-practice', 'low', 'New-tab link lacks explicit rel protection', 'Modern browsers generally apply noopener by default, so this is a compatibility/hardening hint rather than proof of a vulnerability.', 'A target="_blank" link has no explicit noopener/noreferrer token.', 'Consider rel="noopener" for clarity and compatibility; add noreferrer only when suppressing the referrer is desired.', 'low', { ruleId: 'link-rel-missing' });
     }
 
-    const buttonSelector = 'button,input[type="button"],input[type="submit"],input[type="reset"],input[type="image"],[role="button"],[role="menuitem"],[role="option"]';
+    const buttonSelector = 'button,input[type="button"],input[type="submit"],input[type="reset"],input[type="image"],summary,[role="button"],[role="menuitem"],[role="option"]';
     for (const button of document.querySelectorAll(buttonSelector)) {
-      if (visible(button) && !hasAccessibleName(button)) add(button, 'accessibility', 'high', 'Interactive control has no accessible name', 'A user of assistive technology may not be able to determine what this control does.', `The ${button.tagName.toLowerCase()} control has no detectable accessible name.`, 'Add meaningful visible text, an appropriate non-empty aria-label, a valid aria-labelledby reference, or alt text for image inputs.');
+      if (visible(button) && !hasAccessibleName(button)) add(button, 'accessibility', 'high', 'Interactive control has no accessible name', 'A user of assistive technology may not be able to determine what this control does.', `The ${button.tagName.toLowerCase()} control has no detectable accessible name.`, 'Add meaningful visible text, an appropriate non-empty aria-label, a valid aria-labelledby reference, or alt text for image inputs.', 'high', { ruleId: 'interactive-name-missing' });
     }
 
-    for (const input of document.querySelectorAll('input,select,textarea')) {
+    for (const input of document.querySelectorAll('input,select,textarea,[role="checkbox"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"]')) {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
       if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
       if (!visible(input) || input.matches(':disabled')) continue;
-      const explicitLabels = input.labels ? Array.from(input.labels).some(label => visibleNameText(label) || hasNonEmptyAttr(label, 'aria-label')) : false;
-      const ariaReference = !!labelledByText(input);
-      const hasLabel = explicitLabels || ariaReference || hasNonEmptyAttr(input, 'aria-label') || hasNonEmptyAttr(input, 'title');
-      if (!hasLabel) add(input, 'accessibility', 'high', 'Form control has no accessible label', 'Placeholder text alone is not a reliable replacement for a persistent accessible name.', `Visible ${input.tagName.toLowerCase()} control; field name omitted for privacy.`, 'Associate a meaningful <label for="…"> with this control, or provide a non-empty aria-label/aria-labelledby.');
+      const hasLabel = hasValidAssociatedLabel(input) || !!labelledByText(input) || hasNonEmptyAttr(input, 'aria-label') || hasNonEmptyAttr(input, 'title');
+      if (!hasLabel) add(input, 'accessibility', 'high', 'Form control has no accessible label', 'Placeholder text alone is not a reliable replacement for a persistent accessible name.', `Visible ${input.tagName.toLowerCase()} control; field name omitted for privacy.`, 'Associate a meaningful accessible label with this control (e.g. <label for="…"> exposed to assistive technology), or provide a non-empty aria-label/aria-labelledby.', 'high', { ruleId: 'form-control-unlabelled' });
     }
 
-    const focusableCandidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),select,textarea,[tabindex],[contenteditable="true"]');
+    const focusableCandidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),select,textarea,summary,video[controls],audio[controls],area[href],[tabindex],[contenteditable],[role="button"],[role="checkbox"],[role="switch"],[role="link"],[role="menuitem"],[role="tab"]');
     for (const el of focusableCandidates) {
       if (!visible(el) || el.matches(':disabled') || isWithinInertSubtree(el)) continue;
       let ancestor = el;
@@ -582,10 +651,10 @@
       }
       const explicitTabindex = el.hasAttribute('tabindex');
       const tabFocusable = el.tabIndex >= 0;
-      const nativeFocusable = el.matches('a[href],button,input:not([type="hidden"]),select,textarea') && (!explicitTabindex || el.tabIndex >= 0);
+      const nativeFocusable = el.matches('a[href],button,input:not([type="hidden"]),select,textarea,summary,video[controls],audio[controls],area[href]') && (!explicitTabindex || el.tabIndex >= 0);
       const contentEditable = el.isContentEditable && (!explicitTabindex || el.tabIndex >= 0);
       if (ariaHidden && (nativeFocusable || tabFocusable || contentEditable)) {
-        add(el, 'accessibility', 'high', 'Focusable control is inside aria-hidden content', 'This control appears focusable but is hidden from the accessibility tree by aria-hidden="true" on itself or an ancestor.', `Element type: ${el.tagName.toLowerCase()}; explicit tabindex=${explicitTabindex ? el.getAttribute('tabindex') : '(default)'}.`, 'Remove aria-hidden from content that contains interactive controls, or remove the controls from the tab order while the content is hidden.');
+        add(el, 'accessibility', 'high', 'Focusable control is inside aria-hidden content', 'This control appears focusable but is hidden from the accessibility tree by aria-hidden="true" on itself or an ancestor.', `Element type: ${el.tagName.toLowerCase()}; explicit tabindex=${explicitTabindex ? el.getAttribute('tabindex') : '(default)'}.`, 'Remove aria-hidden from content that contains interactive controls, or remove the controls from the tab order while the content is hidden.', 'high', { ruleId: 'focus-aria-hidden' });
       }
     }
 
@@ -597,22 +666,22 @@
     }
     for (const [id, elements] of idGroups.entries()) {
       if (elements.length < 2) continue;
-      for (const el of elements) add(el, 'functionality', 'medium', 'Duplicate ID detected', 'IDs are expected to be unique; duplicates can break labels, fragment navigation, and script selectors.', `A duplicate ID occurs ${elements.length} times; its literal value is omitted for privacy.`, 'Give each element a unique ID and update associated labels, fragment links, and scripts.');
+      for (const el of elements) add(el, 'functionality', 'medium', 'Duplicate ID detected', 'IDs are expected to be unique; duplicates can break labels, fragment navigation, and script selectors.', `A duplicate ID occurs ${elements.length} times; its literal value is omitted for privacy.`, 'Give each element a unique ID and update associated labels, fragment links, and scripts.', 'medium', { ruleId: 'duplicate-id' });
     }
 
     for (const frame of document.querySelectorAll('iframe')) {
-      if (visible(frame) && !hasNonEmptyAttr(frame, 'title')) add(frame, 'accessibility', 'medium', 'Embedded frame has no title', 'A descriptive title helps users of assistive technology understand embedded content.', `Embedded frame source: ${safeResourceUrl(frame.getAttribute('src') || '(missing)')}`, 'Add a short, descriptive title attribute to the iframe.');
+      if (visible(frame) && !hasNonEmptyAttr(frame, 'title')) add(frame, 'accessibility', 'medium', 'Embedded frame has no title', 'A descriptive title helps users of assistive technology understand embedded content.', `Embedded frame source: ${safeResourceUrl(frame.getAttribute('src') || '(missing)')}`, 'Add a short, descriptive title attribute to the iframe.', 'medium', { ruleId: 'frame-title-missing' });
     }
 
     const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role~="heading"]')).filter(semanticVisible);
     for (const heading of headings) {
-      if (!visibleNameText(heading) && !hasNonEmptyAttr(heading, 'aria-label') && !labelledByText(heading)) add(heading, 'accessibility', 'medium', 'Heading has no accessible text', 'An empty heading can create an unhelpful entry in the document outline.', `Heading level: H${getHeadingLevel(heading)}.`, 'Add descriptive heading text or remove the empty heading if it is unnecessary.');
+      if (!visibleNameText(heading) && !hasNonEmptyAttr(heading, 'aria-label') && !labelledByText(heading)) add(heading, 'accessibility', 'medium', 'Heading has no accessible text', 'An empty heading can create an unhelpful entry in the document outline.', `Heading level: H${getHeadingLevel(heading)}.`, 'Add descriptive heading text or remove the empty heading if it is unnecessary.', 'medium', { ruleId: 'heading-no-text' });
     }
-    if (headings.length && !headings.some(h => getHeadingLevel(h) === 1)) add(headings[0], 'accessibility', 'low', 'Visible heading structure has no H1', 'A primary heading often communicates the topic and structure; absence of H1 alone is not necessarily a WCAG failure.', 'Visible headings exist, but no visible h1 element was found.', 'Consider adding a meaningful primary heading when appropriate.', 'low');
+    if (headings.length && !headings.some(h => getHeadingLevel(h) === 1)) add(headings[0], 'accessibility', 'low', 'Visible heading structure has no H1', 'A primary heading often communicates the topic and structure; absence of H1 alone is not necessarily a WCAG failure.', 'Visible headings exist, but no visible h1 element was found.', 'Consider adding a meaningful primary heading when appropriate.', 'low', { ruleId: 'heading-no-h1' });
     let lastLevel = 0;
     for (const h of headings) {
       const level = getHeadingLevel(h);
-      if (lastLevel && level > lastLevel + 1) add(h, 'accessibility', 'low', 'Heading level is skipped', 'Skipping levels can make content structure harder to follow; review the actual hierarchy before changing tags.', `Previous visible heading: H${lastLevel}; current heading: H${level}.`, 'Use a logical heading hierarchy; do not choose heading tags only for visual size.', 'low');
+      if (lastLevel && level > lastLevel + 1) add(h, 'accessibility', 'low', 'Heading level is skipped', 'Skipping levels can make content structure harder to follow; review the actual hierarchy before changing tags.', `Previous visible heading: H${lastLevel}; current heading: H${level}.`, 'Use a logical heading hierarchy; do not choose heading tags only for visual size.', 'low', { ruleId: 'heading-skipped' });
       lastLevel = level;
     }
 
@@ -635,21 +704,23 @@
         return { el, amount, rect: r };
       }).filter(item => item.amount > 3).sort((a, b) => b.amount - a.amount);
       const culprit = overflowers[0]?.el || document.documentElement;
-      add(culprit, 'responsive', 'high', 'Horizontal overflow detected', 'The document is wider than the usable viewport, which can force horizontal scrolling. Intentional carousels, tables, and maps may be exceptions.', `Usable viewport: ${viewportWidth}px; document scroll width: ${pageWidth}px; largest candidate overhang: ${Math.round(overflowers[0]?.amount || (pageWidth - viewportWidth))}px.`, 'Inspect fixed widths, large images, long unbroken strings, grid/flex children, and missing min-width: 0. Retest at narrower viewports.', 'medium', { viewportWidth, documentWidth: pageWidth, overflowCandidateCount: overflowers.length });
+      add(culprit, 'responsive', 'high', 'Horizontal overflow detected', 'The document is wider than the usable viewport, which can force horizontal scrolling. Intentional carousels, tables, and maps may be exceptions.', `Usable viewport: ${viewportWidth}px; document scroll width: ${pageWidth}px; largest candidate overhang: ${Math.round(overflowers[0]?.amount || (pageWidth - viewportWidth))}px.`, 'Inspect fixed widths, large images, long unbroken strings, grid/flex children, and missing min-width: 0. Retest at narrower viewports.', 'medium', { viewportWidth, documentWidth: pageWidth, overflowCandidateCount: overflowers.length, ruleId: 'overflow-horizontal' });
     }
 
     let smallTargets = 0;
     let smallTargetOverflow = 0;
-    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="link"]')) {
+    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,summary,[role="button"],[role="link"]')) {
       if (!visible(el) || el.matches(':disabled')) continue;
       const style = styleOf(el);
-      const isInlineTextLink = el.tagName === 'A' && style.display === 'inline' && !el.querySelector('img,svg,button');
-      const isNativeSmallControl = ['checkbox', 'radio'].includes((el.getAttribute('type') || '').toLowerCase()) && style.appearance === 'auto';
+      const isInlineTextLink = el.tagName === 'A' && style.display === 'inline' && !el.querySelector('img,svg,button') &&
+        el.parentElement && Array.from(el.parentElement.childNodes).some(n => n !== el && n.nodeType === Node.TEXT_NODE && (n.textContent || '').trim().length > 0);
+      const hasExplicitSize = el.hasAttribute('style') && (Boolean(el.style.width) || Boolean(el.style.height));
+      const isNativeSmallControl = ['checkbox', 'radio'].includes((el.getAttribute('type') || '').toLowerCase()) && style.appearance === 'auto' && !hasExplicitSize;
       if (isInlineTextLink || isNativeSmallControl) continue;
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0 && (r.width < 24 || r.height < 24)) {
         smallTargets += 1;
-        if (smallTargets <= 40) add(el, 'accessibility', 'low', 'Small interactive target', 'This target is smaller than 24 by 24 CSS pixels in at least one dimension. WCAG 2.2 SC 2.5.8 has spacing and other exceptions, so size alone does not prove a failure.', `Rendered size: ${Math.round(r.width)} × ${Math.round(r.height)} CSS px.`, 'Consider enlarging the hit area or adding spacing; verify WCAG 2.2 SC 2.5.8 and its applicable exceptions.', 'low');
+        if (smallTargets <= 40) add(el, 'accessibility', 'low', 'Small interactive target', 'This target is smaller than 24 by 24 CSS pixels in at least one dimension. WCAG 2.2 SC 2.5.8 includes spacing (24px target spacing), inline, and equivalent control exceptions.', `Rendered size: ${Math.round(r.width)} × ${Math.round(r.height)} CSS px.`, 'Consider enlarging the hit area or providing 24px spacing between targets; verify WCAG 2.2 SC 2.5.8 applicable exceptions.', 'low', { ruleId: 'target-small' });
         else smallTargetOverflow += 1;
       }
     }
@@ -674,14 +745,14 @@
       const required = large ? 3 : 4.5;
       if (ratio < required) {
         contrastFailuresFound += 1;
-        if (contrastFailuresFound <= MAX_CONTRAST_REPORTS) add(el, 'accessibility', 'medium', 'Possible low text contrast', 'Computed foreground/background colors appear below the WCAG AA text-contrast threshold. Complex backgrounds, pseudo-elements and blend effects are skipped; verify visually.', `Estimated contrast ${ratio.toFixed(2)}:1; threshold ${required}:1; text content omitted for privacy.`, 'Choose text/background colors with sufficient contrast and verify against the actual rendered background.', 'medium', { contrastRatio: Number(ratio.toFixed(2)), contrastThreshold: required });
+        if (contrastFailuresFound <= MAX_CONTRAST_REPORTS) add(el, 'accessibility', 'medium', 'Possible low text contrast', 'Computed foreground/background colors appear below the WCAG AA text-contrast threshold. Complex backgrounds, pseudo-elements and blend effects are skipped; verify visually.', `Estimated contrast ${ratio.toFixed(2)}:1; threshold ${required}:1; text content omitted for privacy.`, 'Choose text/background colors with sufficient contrast and verify against the actual rendered background.', 'medium', { contrastRatio: Number(ratio.toFixed(2)), contrastThreshold: required, ruleId: 'contrast-low' });
       }
     }
     if (contrastFailuresFound > MAX_CONTRAST_REPORTS) coverageWarnings.push(`${contrastFailuresFound - MAX_CONTRAST_REPORTS} additional low-contrast candidates were not listed individually.`);
 
-    if (all.length > 2500) add(document.body || document.documentElement, 'performance', 'low', 'Large DOM detected', 'A very large DOM can increase style, layout and interaction costs, but element count alone does not establish a performance problem.', `${all.length.toLocaleString()} DOM elements found.`, 'Use browser profiling or Lighthouse to identify actual bottlenecks before simplifying markup.', 'low', { domElementCount: all.length });
+    if (all.length > 2500) add(document.body || document.documentElement, 'performance', 'low', 'Potential performance optimization: large DOM', 'A very large DOM can increase style, layout and interaction costs. This is an optimization indicator rather than a measured performance bottleneck.', `${all.length.toLocaleString()} DOM elements found.`, 'Use browser profiling or Lighthouse to measure actual performance impact before simplifying markup.', 'low', { domElementCount: all.length, ruleId: 'dom-large' });
     const externalScriptCount = Array.from(document.scripts).filter(s => s.src).length;
-    if (externalScriptCount > 25) add(document.head || document.documentElement, 'performance', 'low', 'Many external scripts detected', 'A high number of script tags can add network and execution overhead, though count alone does not measure performance.', `${externalScriptCount} external script tags detected.`, 'Use Lighthouse or browser performance profiling to identify costly resources before changing scripts.', 'low', { externalScriptCount });
+    if (externalScriptCount > 25) add(document.head || document.documentElement, 'performance', 'low', 'Potential performance optimization: many external scripts', 'A high number of script tags can add network and execution overhead. Count alone is an indicator rather than an execution measurement.', `${externalScriptCount} external script tags detected.`, 'Use Lighthouse or browser performance profiling to identify costly resources before changing scripts.', 'low', { externalScriptCount, ruleId: 'script-many' });
     const dpr = window.devicePixelRatio || 1;
     const oversizedImages = Array.from(document.images).filter(img => {
       if (!img.complete || !img.naturalWidth) return false;
@@ -690,18 +761,18 @@
     }).sort((a, b) => (b.naturalWidth / Math.max(1, b.getBoundingClientRect().width * dpr)) - (a.naturalWidth / Math.max(1, a.getBoundingClientRect().width * dpr)));
     if (oversizedImages.length > 5) coverageWarnings.push(`${oversizedImages.length - 5} additional oversized-image candidates were not listed individually.`);
     for (const img of oversizedImages.slice(0, 5)) {
-      add(img, 'performance', 'low', 'Large source image may be oversized', 'The selected source is substantially wider than the rendered width even after allowing for device-pixel ratio. It may still be appropriate for zooming or responsive use.', `Intrinsic width: ${img.naturalWidth}px; rendered width: ${Math.round(img.getBoundingClientRect().width)}px; device pixel ratio: ${dpr}.`, 'Check transferred bytes and responsive sources before changing the image.', 'low');
+      add(img, 'performance', 'low', 'Potential performance optimization: oversized source image', 'The selected source is substantially wider than the rendered width even after allowing for device-pixel ratio. It may still be appropriate for zooming or responsive use.', `Intrinsic width: ${img.naturalWidth}px; rendered width: ${Math.round(img.getBoundingClientRect().width)}px; device pixel ratio: ${dpr}.`, 'Check transferred bytes and responsive sources before changing the image.', 'low', { ruleId: 'image-oversized' });
     }
 
     if (location.protocol === 'https:') {
       const mixedContent = collectInsecureResourceCandidates();
       const insecure = mixedContent.candidates;
-      for (const item of insecure.slice(0, 40)) add(item.el, 'best-practice', 'medium', 'HTTP resource referenced by HTTPS page', 'A secure page references a resource over unencrypted HTTP. Browsers may block active mixed content; this static check does not confirm that a request succeeded.', `${item.sourceKind} references ${safeResourceUrl(item.raw)}.`, 'Use the HTTPS version of the resource or remove it if no secure version exists.', 'medium');
+      for (const item of insecure.slice(0, 40)) add(item.el, 'best-practice', 'medium', 'HTTP resource referenced by HTTPS page', 'A secure page references a resource over unencrypted HTTP. Browsers may block active mixed content; this static check does not confirm that a request succeeded.', `${item.sourceKind} references ${safeResourceUrl(item.raw)}.`, 'Use the HTTPS version of the resource or remove it if no secure version exists.', 'medium', { ruleId: 'resource-mixed-http' });
       if (insecure.length > 40) coverageWarnings.push(`${insecure.length - 40} additional mixed-content candidates were not listed individually.`);
       if (mixedContent.inaccessibleStylesheets.length) coverageWarnings.push(`${mixedContent.inaccessibleStylesheets.length} stylesheet(s) could not be inspected for CSS url() references because browser access restrictions apply.`);
     } else if (location.protocol === 'http:' && !isLocalHostname(location.hostname)) {
       const password = document.querySelector('input[type="password"]:not(:disabled)');
-      if (password && visible(password)) add(password, 'best-practice', 'high', 'Password field is displayed on an insecure HTTP page', 'Data sent from a public HTTP page is not protected by HTTPS in transit; authentication pages should use secure transport.', 'A visible password field is present on a non-local HTTP origin. No input values are read.', 'Serve authentication and sensitive forms over HTTPS, redirect HTTP to HTTPS, and configure secure cookies.');
+      if (password && visible(password)) add(password, 'best-practice', 'critical', 'Password field is displayed on an insecure HTTP page', 'Data sent from a public HTTP page is not protected by HTTPS in transit; authentication pages should use secure transport.', 'A visible password field is present on a non-local HTTP origin. No input values are read.', 'Serve authentication and sensitive forms over HTTPS, redirect HTTP to HTTPS, and configure secure cookies.', 'high', { ruleId: 'form-password-http' });
     }
 
     const openShadowHosts = all.filter(el => el.shadowRoot && el.shadowRoot.mode === 'open').length;
@@ -723,6 +794,22 @@
       categories[f.category] = (categories[f.category] || 0) + 1;
     }
 
+    const rawHash = location.hash || '';
+    let isHashAnchor = false;
+    let isClientRoute = false;
+    if (rawHash && rawHash !== '#' && rawHash.toLowerCase() !== '#top') {
+      const targetId = rawHash.startsWith('#') ? rawHash.slice(1) : rawHash;
+      let anchorEl = null;
+      try {
+        anchorEl = targetId ? (document.getElementById(targetId) || document.querySelector(`a[name="${CSS.escape(targetId)}"]`)) : null;
+      } catch (_) {}
+      if (anchorEl) {
+        isHashAnchor = true;
+      } else if (rawHash.startsWith('#/') || rawHash.startsWith('#!') || rawHash.length > 1) {
+        isClientRoute = true;
+      }
+    }
+
     return {
       product: 'Local Web QA Copilot',
       version: VERSION,
@@ -732,6 +819,8 @@
       title: document.title || '(untitled page)',
       checkedAt: new Date().toISOString(),
       viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: dpr },
+      isHashAnchor,
+      isClientRoute,
       metrics: {
         domElements: all.length, images: document.images.length, links: document.links.length,
         forms: document.forms.length, externalScripts: externalScriptCount,

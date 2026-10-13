@@ -1,0 +1,70 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  validate-and-test:
+    name: Validate Extension & Run Regression Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate manifest and verify file references
+        run: |
+          node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            if (manifest.manifest_version !== 3) throw new Error("Expected manifest_version 3");
+            const files = [
+              manifest.background?.service_worker,
+              manifest.side_panel?.default_path,
+              ...Object.values(manifest.icons || {})
+            ].filter(Boolean);
+            for (const file of files) {
+              if (!fs.existsSync(file)) throw new Error("Referenced file does not exist: " + file);
+            }
+            console.log("Manifest and referenced files validated successfully.");
+          '
+
+      - name: Validate JavaScript syntax
+        run: |
+          node -c background.js privacy.js popup.js scanner.js baselines.js
+
+      - name: Run Privacy & Baseline unit tests
+        run: |
+          node tests/privacy.test.cjs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Run regression suite
+        run: |
+          python tests/run_regression.py
+
+      - name: Run popup smoke tests
+        run: |
+          python tests/popup_smoke.py

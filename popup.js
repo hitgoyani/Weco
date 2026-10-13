@@ -25,15 +25,19 @@ function jsonForPrompt(value) {
 
 
 function findingSignature(f) {
-  return [f.category, f.title, f.selector].join('|');
+  return [f.ruleId || f.category, f.title, f.selector].join('|');
 }
 
 function sanitizedFinding(f) {
   return {
-    ...f,
-    selector: safeSelectorForSharing(f.selector),
-    element: safeTextForSharing(f.element || ''),
+    id: f.id,
+    ruleId: f.ruleId,
+    category: f.category,
+    severity: f.severity,
+    confidence: f.confidence || 'medium',
     title: safeTextForSharing(f.title),
+    element: safeTextForSharing(f.element || ''),
+    selector: safeSelectorForSharing(f.selector),
     description: safeTextForSharing(f.description),
     evidence: safeTextForSharing(f.evidence),
     recommendation: safeTextForSharing(f.recommendation)
@@ -42,11 +46,20 @@ function sanitizedFinding(f) {
 
 function sanitizeReportForSharing(report) {
   return {
-    ...report,
+    product: report.product || 'Local Web QA Copilot',
+    version: report.version || '1.2.0',
+    checkedAt: report.checkedAt,
     url: safeUrlForSharing(report.url),
     origin: (() => { try { const u = new URL(report.url); return ['http:', 'https:'].includes(u.protocol) ? u.origin : '(origin omitted)'; } catch (_) { return '(origin omitted)'; } })(),
     path: (() => { try { const u = new URL(report.url); return ['http:', 'https:'].includes(u.protocol) ? safePathname(report.path || '/') : '(path omitted)'; } catch (_) { return '(path omitted)'; } })(),
     title: safeTextForSharing(report.title),
+    viewport: report.viewport ? { width: report.viewport.width, height: report.viewport.height, devicePixelRatio: report.viewport.devicePixelRatio } : undefined,
+    metrics: report.metrics ? { ...report.metrics } : {},
+    counts: report.counts ? { ...report.counts } : {},
+    categories: report.categories ? { ...report.categories } : {},
+    totalFindings: report.totalFindings,
+    displayedFindings: report.displayedFindings,
+    truncated: !!report.truncated,
     findings: (report.findings || []).map(sanitizedFinding),
     limitations: (report.limitations || []).map(safeTextForSharing),
     coverageWarnings: (report.coverageWarnings || []).map(safeTextForSharing)
@@ -56,15 +69,16 @@ function sanitizeReportForSharing(report) {
 function sanitizeComparisonForSharing(compare) {
   if (!compare) return null;
   const map = entries => (entries || []).map(f => ({
+    ruleId: f.ruleId,
     title: safeTextForSharing(f.title), category: f.category, severity: f.severity,
     selector: safeSelectorForSharing(f.selector)
   }));
   return { resolved: map(compare.resolved), added: map(compare.added), kept: map(compare.kept), resolutionReliable: !!compare.resolutionReliable };
 }
 
-async function pageKey(source) {
+async function pageKey(source, options = {}) {
   const raw = typeof source === 'string' ? source : (source?.url || '');
-  const identity = PRIVACY.baselineIdentity(raw);
+  const identity = PRIVACY.baselineIdentity(raw, options);
   if (!globalThis.crypto?.subtle) throw new Error('Secure local hashing is unavailable; baseline was not saved to avoid key collisions.');
   const bytes = new TextEncoder().encode(identity);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -369,11 +383,12 @@ async function copyText(value) {
 async function saveBaseline() {
   if (!state.report || !state.tab) return;
   try {
-    const key = await pageKey(state.report.url);
+    const key = await pageKey(state.report.url, { isRoute: !!state.report.isClientRoute, isAnchor: !!state.report.isHashAnchor });
     const baseline = {
       url: safeUrlForSharing(state.report.url),
       title: safeTextForSharing(state.report.title).slice(0, 100),
       savedAt: new Date().toISOString(),
+      viewport: state.report.viewport ? { width: state.report.viewport.width, height: state.report.viewport.height } : null,
       totalFindings: state.report.totalFindings ?? state.report.findings.length,
       displayedFindings: state.report.findings.length,
       truncated: !!state.report.truncated,
@@ -385,7 +400,7 @@ async function saveBaseline() {
         links: state.report.metrics.links,
         forms: state.report.metrics.forms
       },
-      findings: state.report.findings.map(f => ({ title: f.title, category: f.category, severity: f.severity, selector: f.selector }))
+      findings: state.report.findings.map(f => ({ ruleId: f.ruleId, title: f.title, category: f.category, severity: f.severity, selector: f.selector }))
     };
     await chrome.storage.local.set({ [key]: baseline });
     state.baseline = baseline;
@@ -400,7 +415,7 @@ async function saveBaseline() {
 async function compareBaseline() {
   if (!state.report || !state.tab) return;
   try {
-    const key = await pageKey(state.report.url);
+    const key = await pageKey(state.report.url, { isRoute: !!state.report.isClientRoute, isAnchor: !!state.report.isHashAnchor });
     const stored = await chrome.storage.local.get(key);
     const baseline = stored[key];
     if (!baseline) {
@@ -412,19 +427,24 @@ async function compareBaseline() {
     const after = new Set(state.report.findings.map(findingSignature));
     const added = state.report.findings.filter(f => !before.has(findingSignature(f)));
     const kept = state.report.findings.filter(f => before.has(findingSignature(f)));
-    const resolutionReliable = !!baseline.completeForComparison && state.report.completeForComparison !== false && !baseline.truncated && !state.report.truncated;
+    const viewportChanged = !!(baseline.viewport && state.report.viewport &&
+      Math.abs(baseline.viewport.width - state.report.viewport.width) > 40);
+    const resolutionReliable = !!baseline.completeForComparison && state.report.completeForComparison !== false && !baseline.truncated && !state.report.truncated && !viewportChanged;
     const resolved = resolutionReliable ? beforeFindings.filter(f => !after.has(findingSignature(f))) : [];
     state.baseline = baseline;
-    state.compare = { resolved, added, kept, resolutionReliable };
+    state.compare = { resolved, added, kept, resolutionReliable, viewportChanged };
     const topAdded = added.slice(0, 5).map(f => `<div class="finding-delta new">+ ${escapeHtml(f.title)} <span>(${escapeHtml(f.severity)})</span></div>`).join('');
     const topResolved = resolved.slice(0, 5).map(f => `<div class="finding-delta resolved">− ${escapeHtml(f.title)}</div>`).join('');
     const resolvedLabel = resolutionReliable ? `${resolved.length} no longer detected` : 'Not calculated';
-    const reliabilityNote = resolutionReliable
+    let reliabilityNote = resolutionReliable
       ? 'A finding missing from a later snapshot is not proof that a code change fixed it.'
-      : 'At least one scan was incomplete or had coverage limits. Findings omitted from the current sample are not labeled resolved.';
-    $('comparePanel').innerHTML = `<strong>Baseline comparison</strong><div class="finding-subtitle">Saved ${escapeHtml(formatDate(baseline.savedAt))} · matched by category, title and selector</div><div class="compare-stats"><span><b class="resolved-count">${resolutionReliable ? resolved.length : '—'}</b> ${escapeHtml(resolvedLabel)}</span><span><b class="new-count">${added.length}</b> new in captured results</span><span><b>${kept.length}</b> still present</span></div>${topResolved}${resolutionReliable && resolved.length > 5 ? `<div class="finding-delta">…and ${resolved.length - 5} more no longer detected</div>` : ''}${topAdded}${added.length > 5 ? `<div class="finding-delta">…and ${added.length - 5} more new findings</div>` : ''}<div class="finding-delta note">${escapeHtml(reliabilityNote)}</div>`;
+      : 'At least one scan was incomplete, had coverage limits, or changed viewport. Findings omitted from the current sample are not labeled resolved.';
+    if (viewportChanged) {
+      reliabilityNote += ` (Viewport changed: ${baseline.viewport?.width}px vs ${state.report.viewport?.width}px).`;
+    }
+    $('comparePanel').innerHTML = `<strong>Baseline comparison</strong><div class="finding-subtitle">Saved ${escapeHtml(formatDate(baseline.savedAt))} · matched by rule and selector</div><div class="compare-stats"><span><b class="resolved-count">${resolutionReliable ? resolved.length : '—'}</b> ${escapeHtml(resolvedLabel)}</span><span><b class="new-count">${added.length}</b> new in captured results</span><span><b>${kept.length}</b> still present</span></div>${topResolved}${resolutionReliable && resolved.length > 5 ? `<div class="finding-delta">…and ${resolved.length - 5} more no longer detected</div>` : ''}${topAdded}${added.length > 5 ? `<div class="finding-delta">…and ${added.length - 5} more new findings</div>` : ''}<div class="finding-delta note">${escapeHtml(reliabilityNote)}</div>`;
     $('comparePanel').hidden = false;
-    setStatus(resolutionReliable ? `Compared with baseline: ${resolved.length} no longer detected, ${added.length} new, ${kept.length} still present.` : `Compared captured findings: ${added.length} new and ${kept.length} still present. Resolution is unverified because coverage is incomplete.`, 'success');
+    setStatus(resolutionReliable ? `Compared with baseline: ${resolved.length} no longer detected, ${added.length} new, ${kept.length} still present.` : `Compared captured findings: ${added.length} new and ${kept.length} still present. Resolution is unverified because coverage is incomplete or context changed.`, 'success');
   } catch (error) {
     setStatus(error.message || 'Could not read the saved baseline from local extension storage.', 'error');
   }

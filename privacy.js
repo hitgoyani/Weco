@@ -17,7 +17,10 @@
     'user', 'users', 'member', 'members', 'profile', 'profiles', 'account',
     'accounts', 'customer', 'customers', 'order', 'orders', 'invoice',
     'invoices', 'session', 'sessions', 'reset', 'verify', 'verification',
-    'invite', 'invites', 'token', 'auth', 'authorization', 'download', 'file'
+    'invite', 'invites', 'token', 'auth', 'authorization', 'download', 'file',
+    'workspace', 'workspaces', 'project', 'projects', 'repo', 'repos',
+    'repository', 'repositories', 'org', 'orgs', 'organization', 'organizations',
+    'team', 'teams', 'tenant', 'tenants', 'client', 'clients', 'app', 'apps'
   ]);
 
   function normalizeParamName(key) {
@@ -49,12 +52,21 @@
 
   function safePathname(pathname) {
     const parts = String(pathname || '/').split('/');
+    let lastWasRedactedUnderScope = false;
     return parts.map((part, index) => {
       const decoded = decodeURIComponentSafe(part);
       const previous = decodeURIComponentSafe(parts[index - 1] || '').toLowerCase();
       const normalized = decoded.toLowerCase();
       if (!decoded) return part;
-      if (IDENTIFIER_PATH_SEGMENTS.has(previous)) return '[redacted]';
+      if (IDENTIFIER_PATH_SEGMENTS.has(previous)) {
+        lastWasRedactedUnderScope = true;
+        return '[redacted]';
+      }
+      if (lastWasRedactedUnderScope && !['edit', 'view', 'settings', 'details', 'new'].includes(normalized)) {
+        lastWasRedactedUnderScope = false;
+        return '[redacted]';
+      }
+      lastWasRedactedUnderScope = false;
       if (looksLikeOpaqueToken(decoded)) return '[redacted]';
       if (/^[0-9]{6,}$/.test(decoded) || /^\+?\d[\d .()\-]{7,}\d$/.test(decoded)) return '[redacted]';
       if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded)) return '[redacted]';
@@ -130,13 +142,23 @@
     return safe || '(identifier-only selector omitted for privacy)';
   }
 
-  function baselineIdentity(raw) {
+  function baselineIdentity(raw, options = {}) {
     try {
       const url = new URL(String(raw || ''));
       url.username = '';
       url.password = '';
       // Preserve exact path/query ordering to avoid key collisions; only this identity is hashed before storage.
-      const routeFragment = url.hash.startsWith('#/') || url.hash.startsWith('#!') ? url.hash : '';
+      let routeFragment = '';
+      const hash = url.hash || '';
+      if (hash && hash !== '#' && hash.toLowerCase() !== '#top') {
+        const isCommonInPageAnchor = ['#top', '#bottom', '#header', '#footer', '#content', '#main'].includes(hash.toLowerCase());
+        const isExplicitRoute = options && options.isRoute === true;
+        const isExplicitAnchor = options && options.isAnchor === true;
+        const looksLikeRoute = hash.startsWith('#/') || hash.startsWith('#!') || hash.includes('/') || hash.includes('?') || hash.includes('=');
+        if (!isExplicitAnchor && (isExplicitRoute || looksLikeRoute || (options && options.isAnchor === false))) {
+          routeFragment = hash;
+        }
+      }
       return `${url.protocol}//${url.host}${url.pathname}${url.search}${routeFragment}`;
     } catch (_) {
       return String(raw || '');

@@ -14,6 +14,8 @@ assert.notEqual(p.baselineIdentity('https://example.test/profile?username=amy'),
 assert.notEqual(p.baselineIdentity('https://example.test/jobs?code=one'), p.baselineIdentity('https://example.test/jobs?code=two'));
 assert.notEqual(p.baselineIdentity('https://example.test/search?auth=one'), p.baselineIdentity('https://example.test/search?auth=two'));
 assert.notEqual(p.baselineIdentity('https://example.test/app#/dashboard'), p.baselineIdentity('https://example.test/app#!/home'));
+assert.notEqual(p.baselineIdentity('https://example.test/#dashboard', { isRoute: true }), p.baselineIdentity('https://example.test/#settings', { isRoute: true }), 'SPA routes with bare hashes must not collide');
+assert.equal(p.baselineIdentity('https://example.test/#section-a', { isAnchor: true }), p.baselineIdentity('https://example.test/#section-b', { isAnchor: true }), 'in-page anchors share a baseline when marked as anchors');
 assert.equal(p.baselineIdentity('https://example.test/page#top'), p.baselineIdentity('https://example.test/page#bottom'), 'ordinary in-page anchors share a baseline');
 assert.equal(p.baselineIdentity('not-a-valid-url'), 'not-a-valid-url', 'malformed URL gracefully returns input string without throwing');
 assert.equal(p.baselineIdentity(''), '', 'empty input gracefully returns empty string without throwing');
@@ -37,4 +39,6 @@ assert.ok(!p.safeResourceUrl('https://example.test/users/alice/download/secret-f
 assert.equal(p.safeSelectorForSharing('#private-user-id > button'), 'button');
 assert.equal(p.safeSelectorForSharing('body > div#private-user-id > button'), 'body > div > button');
 assert.ok(!p.safeSelectorForSharing('#user\\:email > button').includes('user'));
+const workspaceUrl = p.safeUrlForSharing('https://example.test/workspace/alice/private-project');
+assert.ok(!workspaceUrl.includes('alice') && !workspaceUrl.includes('private-project'), 'workspace project paths must be redacted');
 console.log('PASS: baseline identity collision regressions, SPA fragments and export URL/selector privacy.');

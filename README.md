@@ -4,14 +4,18 @@ A student-built, local-first Chrome/Chromium Edge side-panel extension inspired 
 
 ## Install
 
-1. Download and extract `local-web-qa-copilot-v1.2.0.zip`.
-2. Open `chrome://extensions` in Chrome or `edge://extensions` in Microsoft Edge.
-3. Enable **Developer mode**.
-4. Click **Load unpacked** and select the extracted `local-web-qa-copilot` folder — the folder that contains `manifest.json`.
-5. Open a normal website and click the extension icon. The tool opens in the browser side panel.
+1. Clone or download this repository:
+   ```bash
+   git clone https://github.com/hitgoyani/Weco.git
+   ```
+   Or download and extract the repository source ZIP from GitHub.
+2. Open `chrome://extensions` in Google Chrome or `edge://extensions` in Microsoft Edge.
+3. Enable **Developer mode** (toggle in the top-right corner).
+4. Click **Load unpacked** and select the repository directory (the folder containing `manifest.json`).
+5. Open any website and click the extension icon in the toolbar. The tool opens in the browser side panel.
 6. Click **Scan current page**.
 
-The extension needs Chrome/Edge 116 or later for the Side Panel API. After installing or updating the extension, **refresh any tab that was already open** before scanning it. This clears any older content-script listener running in that tab. To scan a local `file://` page, open the extension's details and enable **Allow access to file URLs**. Browser-internal pages, extension pages, and the Chrome Web Store cannot be scanned.
+The extension needs Chrome/Edge 116 or later for the Side Panel API. After installing or updating the extension, **refresh any tab that was already open** before scanning it. This clears any older content-script listener running in that tab. To scan a local `file://` page, open the extension's details in `chrome://extensions` and enable **Allow access to file URLs**. Browser-internal pages, extension pages, and the Chrome Web Store cannot be scanned.
 
 ## What it checks
 
@@ -93,5 +97,8 @@ No cloud AI/API integration is included. Copied prompts are intended for a codin
 - Invalidated reports during same-URL reloads/navigation so stale findings cannot be mistaken for a fresh scan.
 - Corrected image-only accessible names, hidden descendant text handling, negative tabindex/inert cases, common fragment conventions, modern CSS color parsing, disabled contrast targets, overflow width measurement, and overflow-candidate selection.
 - Reworked URL baseline identities to avoid collisions on long slugs and query values; preserve SPA routes in identity hashes while excluding ordinary page anchors.
-- Sanitized shared URLs/resources/selectors, added baseline management, removed the misleading score, sorted by severity before truncation, and introduced coverage warnings and comparison safeguards.
 - Added Chromium regression coverage for the issues above.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

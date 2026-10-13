@@ -71,6 +71,7 @@ async def main():
         assert has("Interactive control has no accessible name", "#labelled-by-hidden-only-button")
         assert has("Image alternative text is missing or whitespace-only", "#image-without-alt")
         assert has("Form control has no accessible label", "#unlabelled-field")
+        assert has("Form control has no accessible label", "#aria-hidden-label-input")
         assert not has("Form control has no accessible label", "#email-field")
         assert not has("Form control has no accessible label", "#contents-field")
         assert not has("Form control has no accessible label", "#hidden-field")
@@ -102,8 +103,10 @@ async def main():
         empty_heading = next(f for f in findings if f["title"] == "Heading has no accessible text")
         assert await page.evaluate("s => document.querySelector(s)?.tagName", empty_heading["selector"]) == "H3"
 
-        # Semantics: flag made-up ARIA but do not flag a valid doc-* role.
+        # Semantics: flag made-up ARIA, abstract roles, and invalid attribute values, but do not flag a valid doc-* role.
         assert has("Unknown or invalid ARIA role")
+        assert has("Abstract ARIA role must not be used in content", "#abstract-role-element")
+        assert has("Invalid ARIA attribute value", "#invalid-token-element")
         invalid_roles = [await page.evaluate("s => document.querySelector(s)?.getAttribute('role') || ''", f["selector"]) for f in matching("Unknown or invalid ARIA role")]
         assert 'doc-chapter' not in invalid_roles, invalid_roles
         assert has("Unrecognized ARIA attribute")
