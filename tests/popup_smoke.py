@@ -223,7 +223,71 @@ async def main():
         assert "/mock-qa/jobs" in fix_plan
 
         assert not errors, errors
-        print("PASS: side-panel state, real scanner IDs, inspect/copy actions, distinct #id baselines, permissions flow, reload invalidation, multi-page site audit.")
+
+        # Test: Floating window mode (?float=1) correctly connects to target browser window & tab
+        float_page = await browser.new_page()
+        float_errors = []
+        float_page.on("pageerror", lambda err: float_errors.append(str(err)))
+        await float_page.route("http://extension.local/popup.html*", lambda route: route.fulfill(
+            status=200, content_type="text/html", body=HTML
+        ))
+        await float_page.goto("http://extension.local/popup.html?float=1&targetWindowId=1&targetTabId=1")
+        await float_page.evaluate("""(report) => {
+          window.chrome = window.chrome || {};
+          const sessionStore = Object.create(null), localStore = Object.create(null);
+          const storageApi = store => ({
+            async get(key) {
+              if (key === null) return {...store};
+              if (Array.isArray(key)) return Object.fromEntries(key.map(k => [k, store[k]]).filter(([,v]) => v !== undefined));
+              if (typeof key === 'string') return {[key]: store[key]};
+              return {};
+            },
+            async set(items) { Object.assign(store, items); },
+            async remove(keys) { for (const k of (Array.isArray(keys) ? keys : [keys])) delete store[k]; }
+          });
+          const tabs = {
+            currentUrl: report.url,
+            async query() { return [{id: 1, url: this.currentUrl, title: report.title, active: true, windowId: 1}]; },
+            async get(id) { return {id, url: this.currentUrl, title: report.title, active: true, windowId: 1}; },
+            async sendMessage() { return {ok: true, report}; },
+            onActivated: {addListener() {}},
+            onUpdated: {addListener() {}}
+          };
+          Object.defineProperty(window.chrome, 'runtime', {value: {getURL: path => 'chrome-extension://test/' + path, getManifest: () => ({version: '1.2.0'})}, configurable: true});
+          Object.defineProperty(window.chrome, 'tabs', {value: tabs, configurable: true});
+          Object.defineProperty(window.chrome, 'windows', {
+            value: {
+              async getCurrent() { return {id: 99, type: 'popup'}; },
+              async getLastFocused() { return {id: 1, type: 'normal'}; },
+              async get(id) { return {id, type: id === 99 ? 'popup' : 'normal'}; },
+              onFocusChanged: {addListener() {}}
+            },
+            configurable: true
+          });
+          Object.defineProperty(window.chrome, 'scripting', {value: {async executeScript() { return []; }}, configurable: true});
+          Object.defineProperty(window.chrome, 'storage', {value: {session: storageApi(sessionStore), local: storageApi(localStore)}, configurable: true});
+          Object.defineProperty(window.crypto, 'subtle', {
+            value: {
+              async digest(algo, data) {
+                const arr = new Uint8Array(32);
+                const src = new Uint8Array(data);
+                for (let i = 0; i < src.length; i++) arr[i % 32] = (arr[i % 32] * 31 + src[i]) & 0xff;
+                return arr.buffer;
+              }
+            },
+            configurable: true
+          });
+        }""", real_report)
+        await float_page.add_script_tag(path=str(ROOT / "privacy.js"))
+        await float_page.add_script_tag(path=str(ROOT / "popup.js"))
+        await float_page.wait_for_function("document.querySelector('#pageTitle').textContent === 'Mock QA page'")
+        assert await float_page.locator("#popoutBtn").is_hidden()
+        float_status = await float_page.locator("#statusLine").inner_text()
+        assert not "Browser-internal and extension pages cannot be scanned" in float_status, float_status
+        assert not float_errors, float_errors
+        await float_page.close()
+
+        print("PASS: side-panel state, real scanner IDs, inspect/copy actions, distinct #id baselines, permissions flow, reload invalidation, multi-page site audit, float window tracking.")
         await browser.close()
 
 

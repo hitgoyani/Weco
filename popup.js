@@ -155,9 +155,63 @@ function setStatus(message, type = '') {
   node.className = `status-line ${type}`.trim();
 }
 
+const isFloatMode = location.search.includes('float=1');
+const floatUrlParams = new URLSearchParams(location.search);
+let targetWindowId = floatUrlParams.get('targetWindowId') ? parseInt(floatUrlParams.get('targetWindowId'), 10) : null;
+let targetTabId = floatUrlParams.get('targetTabId') ? parseInt(floatUrlParams.get('targetTabId'), 10) : null;
 let currentWindowId = null;
 
 async function getActiveTab() {
+  if (isFloatMode) {
+    if (targetTabId !== null) {
+      try {
+        const tab = await chrome.tabs.get(targetTabId);
+        if (tab && !tab.url?.startsWith('chrome-extension://')) {
+          targetWindowId = tab.windowId;
+          targetTabId = null;
+          return tab;
+        }
+      } catch (_) {
+        targetTabId = null;
+      }
+    }
+
+    if (targetWindowId !== null) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, windowId: targetWindowId });
+        if (tabs[0] && !tabs[0].url?.startsWith('chrome-extension://')) {
+          return tabs[0];
+        }
+      } catch (_) {
+        targetWindowId = null;
+      }
+    }
+
+    try {
+      if (chrome.windows?.getLastFocused) {
+        const normalWin = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+        if (normalWin?.id) {
+          targetWindowId = normalWin.id;
+          const tabs = await chrome.tabs.query({ active: true, windowId: normalWin.id });
+          if (tabs[0] && !tabs[0].url?.startsWith('chrome-extension://')) {
+            return tabs[0];
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const normalTabs = await chrome.tabs.query({ active: true });
+      const candidate = normalTabs.find(t => /^(https?:|file:)/i.test(t.url || ''));
+      if (candidate) {
+        targetWindowId = candidate.windowId;
+        return candidate;
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
   const query = { active: true };
   if (currentWindowId !== null) query.windowId = currentWindowId;
   else query.currentWindow = true;
@@ -263,13 +317,25 @@ async function initialize() {
   setActionButtonsEnabled(false);
   try {
     const win = await chrome.windows?.getCurrent?.();
-    if (win?.id) currentWindowId = win.id;
+    if (win?.id && win.type !== 'popup' && !isFloatMode) currentWindowId = win.id;
   } catch (_) {}
   await selectTabContext(await getActiveTab());
 }
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
+    if (isFloatMode) {
+      const curWin = await chrome.windows?.getCurrent?.().catch(() => null);
+      if (curWin?.id && activeInfo.windowId === curWin.id) return;
+      targetWindowId = activeInfo.windowId;
+      if (state.tab?.id === activeInfo.tabId) return;
+      const tab = await chrome.tabs.get(activeInfo.tabId);
+      if (tab && !tab.url?.startsWith('chrome-extension://')) {
+        await selectTabContext(tab);
+      }
+      return;
+    }
+
     if (currentWindowId !== null && activeInfo.windowId && activeInfo.windowId !== currentWindowId) return;
     if (state.tab?.id === activeInfo.tabId) return;
     await selectTabContext(await chrome.tabs.get(activeInfo.tabId));
@@ -277,6 +343,25 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     await selectTabContext(null);
   }
 });
+
+if (chrome.windows?.onFocusChanged) {
+  chrome.windows.onFocusChanged.addListener(async (windowId) => {
+    if (!isFloatMode) return;
+    if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+    try {
+      const curWin = await chrome.windows.getCurrent().catch(() => null);
+      if (curWin?.id && windowId === curWin.id) return;
+      const focusedWin = await chrome.windows.get(windowId).catch(() => null);
+      if (focusedWin?.type === 'normal') {
+        targetWindowId = windowId;
+        const activeTab = await getActiveTab();
+        if (activeTab && activeTab.id !== state.tab?.id) {
+          await selectTabContext(activeTab);
+        }
+      }
+    } catch (_) {}
+  });
+}
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (state.tab?.id !== tabId) return;
@@ -884,10 +969,21 @@ $('searchInput').addEventListener('input', () => {
 });
 $('saveBaselineBtn').addEventListener('click', saveBaseline);
 $('compareBtn').addEventListener('click', compareBaseline);
-$('popoutBtn')?.addEventListener('click', () => {
+$('popoutBtn')?.addEventListener('click', async () => {
   if (chrome.windows?.create) {
+    let parentWinId = currentWindowId;
+    let targetTabIdParam = state.tab?.id;
+    if (!parentWinId) {
+      try {
+        const curWin = await chrome.windows.getCurrent();
+        parentWinId = curWin?.id;
+      } catch (_) {}
+    }
+    const params = new URLSearchParams({ float: '1' });
+    if (parentWinId) params.set('targetWindowId', String(parentWinId));
+    if (targetTabIdParam) params.set('targetTabId', String(targetTabIdParam));
     chrome.windows.create({
-      url: chrome.runtime.getURL('popup.html?float=1'),
+      url: chrome.runtime.getURL(`popup.html?${params.toString()}`),
       type: 'popup',
       width: 480,
       height: 720
