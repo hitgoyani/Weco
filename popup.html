@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Web QA Copilot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-copy"><div class="eyebrow">LOCAL-FIRST DEVELOPER TOOL</div><h1>Web QA Copilot</h1></div>
+      <div class="local-pill"><i aria-hidden="true"></i> LOCAL</div>
+    </header>
+
+    <section class="page-card" aria-label="Current page">
+      <div class="page-icon" aria-hidden="true">⌁</div>
+      <div class="page-meta"><div class="page-title" id="pageTitle">Ready to inspect</div><div class="page-url" id="pageUrl">Scan the active tab to find issues.</div></div>
+    </section>
+
+    <button class="primary-btn" id="scanBtn"><span class="scan-icon" aria-hidden="true">⌕</span><span id="scanBtnText">Scan current page</span><span class="btn-arrow" aria-hidden="true">↗</span></button>
+    <div class="status-line" id="statusLine" role="status" aria-live="polite">No page data has been collected yet.</div>
+
+    <section id="reportSection" hidden>
+      <div class="summary-head"><h2>Scan summary</h2><span class="summary-caption">Counts reflect all detected findings</span></div>
+      <div class="severity-grid" aria-label="Finding counts by severity">
+        <div class="severity-item sev-critical"><b id="criticalCount">0</b><span>Critical</span></div>
+        <div class="severity-item sev-high"><b id="highCount">0</b><span>High</span></div>
+        <div class="severity-item sev-medium"><b id="mediumCount">0</b><span>Medium</span></div>
+        <div class="severity-item sev-low"><b id="lowCount">0</b><span>Low</span></div>
+      </div>
+      <div class="summary-strip" id="summaryStrip"></div>
+
+      <div class="toolbar">
+        <select id="categoryFilter" aria-label="Filter findings by category">
+          <option value="all">All categories</option>
+          <option value="accessibility">Accessibility</option>
+          <option value="responsive">Responsive</option>
+          <option value="functionality">Functionality</option>
+          <option value="performance">Performance</option>
+          <option value="seo">SEO</option>
+          <option value="best-practice">Best practice</option>
+        </select>
+        <select id="severityFilter" aria-label="Filter findings by severity">
+          <option value="all">All severities</option>
+          <option value="high">High / Critical</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <label class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" placeholder="Search findings…" autocomplete="off"></label>
+
+      <div class="action-grid">
+        <button class="secondary-btn" id="saveBaselineBtn" title="Save this scan as the baseline for this page">Save baseline</button>
+        <button class="secondary-btn" id="compareBtn" title="Compare the current scan with a saved baseline">Compare baseline</button>
+        <button class="secondary-btn" id="exportBtn">Export JSON</button>
+        <button class="secondary-btn" id="copyAllBtn">Copy fix plan</button>
+        <button class="secondary-btn span-two" id="manageBaselinesBtn">Manage saved baselines</button>
+      </div>
+      <div id="comparePanel" class="compare-panel" hidden></div>
+      <div class="findings-header"><div><h2>Findings <span id="findingTotal">0</span></h2><p>Verify evidence before changing code.</p></div><span class="sort-chip">PRIORITY ORDER</span></div>
+      <div id="findingsList" class="findings-list"></div>
+      <div id="emptyState" class="empty-state" hidden><div class="empty-check" aria-hidden="true">✓</div><b>No findings match</b><span>Try another filter or search term.</span></div>
+      <div class="limitations" id="limitations"></div>
+    </section>
+
+    <footer><span class="footer-dot" aria-hidden="true"></span><span>Runs in your browser. No server uploads. <button id="footerBaselinesBtn" class="link-btn" type="button">Saved baselines</button></span></footer>
+  </main>
+  <script src="privacy.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

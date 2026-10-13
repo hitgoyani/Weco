@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Saved baselines · Local Web QA Copilot</title>
+  <link rel="stylesheet" href="popup.css">
+  <style>
+    body { min-width: 320px; max-width: 760px; min-height: 100vh; height: auto; margin: 0 auto; overflow: auto; }
+    .app { height: auto; min-height: 100vh; overflow: visible; }
+    .manager-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:12px 0; }
+    .manager-header h2 { font-size:18px; margin:0; }
+    .manager-note { color:var(--muted); font-size:12px; margin:6px 0 14px; }
+    .baseline-list { display:flex; flex-direction:column; gap:9px; }
+    .baseline-card { padding:13px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+    .baseline-title { font-size:13px; font-weight:750; overflow-wrap:anywhere; }
+    .baseline-url { font-size:11px; color:var(--muted); margin-top:4px; overflow-wrap:anywhere; }
+    .baseline-meta { font-size:11px; color:var(--muted); margin-top:7px; }
+    .baseline-actions { display:flex; gap:7px; margin-top:10px; }
+    .danger-btn { color:#ffb2b7; border-color:rgba(255,143,152,.3); }
+    .manager-empty { color:var(--muted); border:1px dashed var(--line); border-radius:10px; padding:22px; text-align:center; }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-copy"><div class="eyebrow">LOCAL-FIRST DEVELOPER TOOL</div><h1>Web QA Copilot</h1></div>
+      <div class="local-pill"><i aria-hidden="true"></i> LOCAL</div>
+    </header>
+    <div class="manager-header"><h2>Saved baselines</h2><button id="refreshBtn" class="secondary-btn">Refresh</button></div>
+    <p class="manager-note">Baselines are saved in this browser profile. URL metadata is sanitized; deleting an entry removes its stored comparison data.</p>
+    <div id="statusLine" class="status-line" role="status" aria-live="polite">Loading saved baselines…</div>
+    <div id="baselineList" class="baseline-list"></div>
+    <div id="emptyState" class="manager-empty" hidden>No saved baselines yet. Run a page scan and choose “Save baseline”.</div>
+    <div class="action-grid"><button id="deleteAllBtn" class="secondary-btn danger-btn">Delete all baselines</button></div>
+  </main>
+  <script src="privacy.js"></script>
+  <script src="baselines.js"></script>
+</body>
+</html>

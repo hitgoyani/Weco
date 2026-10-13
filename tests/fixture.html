@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="description" content="A deliberately imperfect page for Local Web QA Copilot regression testing.">
+  <title>Local Web QA Copilot test fixture</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; padding: 18px; color: #222; background: #fff; font: 16px/1.5 Arial, sans-serif; }
+    .low-contrast { color: #999; background: #fff; }
+    .low-contrast-modern { color: oklch(0.65 0.01 250); background: #fff; }
+    .complex-bg { color: #aaa; background-image: linear-gradient(90deg, #fff, #ddd); }
+    .overflow-box { width: 980px; max-width: none; padding: 8px; background: #eee; }
+    .tiny-control { min-width: 12px; min-height: 12px; width: 12px; height: 12px; padding: 0; border: 0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  </style>
+</head>
+<body>
+  <h1>QA fixture</h1>
+  <p>This page intentionally contains sample issues. Do not use it as a production template.</p>
+
+  <h2>Accessible names and forms</h2>
+  <img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" id="image-without-alt">
+  <button id="empty-button"></button>
+  <a id="image-only-link" href="/home"><img alt="Home" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a>
+  <button id="hidden-text-button"><span style="display:none">Hidden name should not count</span><span aria-hidden="true">Decorative icon</span></button>
+  <span id="save-button-label" hidden>Save changes</span>
+  <button id="labelled-by-button" aria-labelledby="save-button-label"></button>
+  <span id="labelled-by-aria-hidden-only" hidden><span aria-hidden="true">Decorative text is not a name</span></span>
+  <button id="labelled-by-hidden-only-button" aria-labelledby="labelled-by-aria-hidden-only"></button>
+  <label for="email-field">Email address</label>
+  <input id="email-field" type="email">
+  <label for="contents-field" style="display:contents">Field label inside display:contents</label>
+  <input id="contents-field" type="text">
+  <input id="unlabelled-field" type="text" placeholder="Placeholder is not a label">
+  <div style="display:none"><input id="hidden-field" type="text"></div>
+  <div aria-hidden="true"><button id="negative-tabindex" tabindex="-1">Removed from tab order</button></div>
+  <div inert><button id="inert-button">Inert button</button></div>
+  <div aria-hidden="true" class="hidden-frame-control"><button id="hidden-focusable">Focusable inside aria-hidden</button></div>
+  <iframe src="about:blank" id="untitled-frame"></iframe>
+  <h3></h3>
+  <p class="low-contrast">This text has weak contrast.</p>
+  <p class="low-contrast-modern">This text uses a modern CSS color function.</p>
+  <p id="complex-background" class="complex-bg">Complex background should be skipped.</p>
+  <button id="disabled-low-contrast" disabled style="color:#aaa;background:#fff">Disabled control: skip contrast heuristic</button>
+
+  <h2>Navigation</h2>
+  <a href="#top">Jump to top convention</a>
+  <a href="#/dashboard">Hash router route</a>
+  <a href="#!/home">Legacy hash router route</a>
+  <a name="legacy-destination"></a>
+  <a href="#legacy-destination">Named anchor target exists</a>
+  <a href="#missing-destination">This fragment target does not exist</a>
+  <a href="#">Placeholder anchor</a>
+
+  <h2>ARIA</h2>
+  <div role="heading" aria-level="2">Valid ARIA heading; role=heading with aria-level must be recognized.</div>
+  <div role="made-up-role" aria-madeup="true">Invalid role and attribute</div>
+  <div role="doc-chapter">Valid document-module role; must not be flagged.</div>
+  <div role="button" tabindex="4">Positive tabindex</div>
+  <h2>Responsive</h2>
+  <div class="overflow-box">This intentionally wide box can cause horizontal overflow on narrow viewports.</div>
+  <button class="tiny-control" aria-label="Tiny action" title="Tiny action"></button>
+
+  <main id="main-content"><h2>Visible main landmark</h2><p>Fixture body contains a main landmark for this explicit check.</p></main>
+
+  <p>Expected behavior: find genuine intentional problems; do not flag the image-only Home link, valid aria-labelledby button, hidden input, focusable negative-tabindex control, inert button, #top, hash-router links, or existing named anchor. Report the bad button, missing image alt, unlabelled input, aria-hidden focusable button, empty heading, invalid ARIA, positive tabindex, restricted zoom, contrast issues when calculable, and overflow.</p>
+</body>
+</html>
