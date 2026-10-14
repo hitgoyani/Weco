@@ -49,6 +49,27 @@
 
   function selectorFor(el) {
     if (!(el instanceof Element)) return 'html';
+    const root = el.getRootNode ? el.getRootNode() : null;
+    if (root && typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
+      const host = root.host;
+      const hostSel = selectorFor(host);
+      const parts = [];
+      let node = el;
+      while (node && node instanceof Element && node !== host) {
+        let part = node.tagName.toLowerCase();
+        const idSel = uniqueIdSelector(node);
+        if (idSel) part += idSel;
+        const parent = node.parentElement;
+        if (!idSel && parent) {
+          const siblings = Array.from(parent.children).filter(s => s.tagName === node.tagName);
+          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+        }
+        parts.unshift(part);
+        node = parent;
+      }
+      return `${hostSel}::shadow > ${parts.join(' > ') || el.tagName.toLowerCase()}`;
+    }
+
     const directId = uniqueIdSelector(el);
     if (directId) return directId;
 
@@ -72,6 +93,36 @@
       node = parent;
     }
     return parts.join(' > ') || 'html';
+  }
+
+  function fingerprintText(value) {
+    // Keep baseline identities local and stable without persisting page text.
+    let hash = 0x811c9dc5;
+    const text = String(value || '').trim().toLowerCase();
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function stableAncestorMarker(el) {
+    for (let node = el?.parentElement; node && node instanceof Element; node = node.parentElement) {
+      const testId = node.getAttribute('data-testid') || node.getAttribute('data-test') || node.getAttribute('data-qa');
+      if (testId) return `test:${fingerprintText(testId)}`;
+      if (node.id && uniqueIdSelector(node)) return `id:${fingerprintText(node.id)}`;
+    }
+    return `tag:${el?.tagName?.toLowerCase() || 'document'}`;
+  }
+
+  function targetKeyForFinding(finding, occurrenceIndex = 0) {
+    const el = finding.el;
+    if (!(el instanceof Element)) return `${finding.ruleId}|document`;
+    const role = (el.getAttribute('role') || el.tagName.toLowerCase()).toLowerCase();
+    const name = el.getAttribute('aria-label') || labelledByText(el) || el.getAttribute('title') ||
+      visibleNameText(el) || el.getAttribute('name') || el.getAttribute('alt') || '';
+    const baseKey = `${finding.ruleId}|${stableAncestorMarker(el)}|${role}|${fingerprintText(name)}`;
+    return occurrenceIndex > 0 ? `${baseKey}:occ:${occurrenceIndex}` : baseKey;
   }
 
   function isWithinInertSubtree(el) {
@@ -153,11 +204,13 @@
 
   function isAccessibilityExposed(el) {
     if (!(el instanceof Element) || !el.isConnected) return false;
+    const selfStyle = styleOf(el);
+    if (selfStyle.visibility === 'hidden' || selfStyle.visibility === 'collapse') return false;
     for (let node = el; node && node instanceof Element; node = node.parentElement) {
       if (node.hasAttribute('inert') || node.hasAttribute('hidden')) return false;
       if ((node.getAttribute('aria-hidden') || '').trim().toLowerCase() === 'true') return false;
       const s = styleOf(node);
-      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || s.contentVisibility === 'hidden') return false;
+      if (s.display === 'none' || s.contentVisibility === 'hidden') return false;
     }
     return true;
   }
@@ -178,21 +231,21 @@
     function walk(node) {
       if (!node || result.length >= max || seenNodes.has(node)) return;
       seenNodes.add(node);
+      if (node !== el && node instanceof Element) {
+        const ariaHidden = (node.getAttribute('aria-hidden') || '').trim().toLowerCase() === 'true';
+        if (ariaHidden || node.hasAttribute('hidden') || node.hasAttribute('inert')) return;
+        const s = styleOf(node);
+        if (s.display === 'none' || s.contentVisibility === 'hidden') return;
+      }
       if (node.nodeType === Node.TEXT_NODE) {
+        const pStyle = node.parentElement ? styleOf(node.parentElement) : null;
+        if (pStyle && (pStyle.visibility === 'hidden' || pStyle.visibility === 'collapse')) return;
         result += ` ${node.nodeValue || ''}`;
         return;
       }
       if (!(node instanceof Element)) return;
-      if (node !== el) {
-        const ariaHidden = (node.getAttribute('aria-hidden') || '').trim().toLowerCase() === 'true';
-        if (ariaHidden || node.hasAttribute('hidden') || node.hasAttribute('inert')) return;
-        const s = styleOf(node);
-        if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || s.contentVisibility === 'hidden') return;
-        if (node.tagName === 'IMG') {
-          result += ` ${node.getAttribute('alt') || ''}`;
-          return;
-        }
-      }
+      const s = styleOf(node);
+      if (s.visibility === 'hidden' || s.visibility === 'collapse') return;
       if (node.tagName === 'IMG') {
         result += ` ${node.getAttribute('alt') || ''}`;
         return;
@@ -289,21 +342,33 @@
     });
   }
 
-  function hasAccessibleName(el) {
-    if (hasNonEmptyAttr(el, 'aria-label') || labelledByText(el)) return true;
-    if (hasNonEmptyAttr(el, 'title')) return true;
+  function getAccessibleNameInfo(el) {
+    if (hasNonEmptyAttr(el, 'aria-label')) return { hasName: true, source: 'aria-label', weak: false };
+    if (labelledByText(el)) return { hasName: true, source: 'aria-labelledby', weak: false };
+
     if (el instanceof HTMLInputElement) {
       const type = (el.type || 'text').toLowerCase();
-      if (type === 'image') return hasNonEmptyAttr(el, 'alt') || hasNonEmptyAttr(el, 'title');
-      if (type === 'submit' || type === 'reset') return true; // User-agent default value supplies a name.
-      if (type === 'button') return !!String(el.value || '').trim() || hasNonEmptyAttr(el, 'title');
-      if (hasValidAssociatedLabel(el)) return true;
+      if (type === 'image') {
+        if (hasNonEmptyAttr(el, 'alt')) return { hasName: true, source: 'alt', weak: false };
+        if (hasNonEmptyAttr(el, 'title')) return { hasName: true, source: 'title', weak: true };
+      }
+      if (type === 'submit' || type === 'reset') return { hasName: true, source: 'default', weak: false };
+      if (type === 'button') {
+        if (String(el.value || '').trim()) return { hasName: true, source: 'value', weak: false };
+        if (hasNonEmptyAttr(el, 'title')) return { hasName: true, source: 'title', weak: true };
+      }
+      if (hasValidAssociatedLabel(el)) return { hasName: true, source: 'label', weak: false };
     }
     if (el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) {
-      if (hasValidAssociatedLabel(el)) return true;
+      if (hasValidAssociatedLabel(el)) return { hasName: true, source: 'label', weak: false };
     }
-    if (hasNonEmptyAttr(el, 'title')) return true;
-    return !!visibleNameText(el);
+    if (visibleNameText(el)) return { hasName: true, source: 'content', weak: false };
+    if (hasNonEmptyAttr(el, 'title')) return { hasName: true, source: 'title', weak: true };
+    return { hasName: false, source: 'none', weak: false };
+  }
+
+  function hasAccessibleName(el) {
+    return getAccessibleNameInfo(el).hasName;
   }
 
   function safeResourceUrl(raw) {
@@ -313,6 +378,32 @@
   function ruleIdFromTitle(title) {
     return String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'general-issue';
   }
+
+  const RULE_STANDARDS = {
+    'image-alt-missing': ['WCAG 2.2 SC 1.1.1 Non-text Content (Level A)'],
+    'link-name-missing': ['WCAG 2.2 SC 2.4.4 Link Purpose (In Context) (Level A)', 'WCAG 2.2 SC 4.1.2 Name, Role, Value (Level A)'],
+    'interactive-name-missing': ['WCAG 2.2 SC 4.1.2 Name, Role, Value (Level A)'],
+    'accessible-name-title-fallback': ['WCAG 2.2 SC 4.1.2 (Advisory)', 'W3C ARIA APG Accessible Names'],
+    'form-control-unlabelled': ['WCAG 2.2 SC 1.3.1 Info and Relationships (Level A)', 'WCAG 2.2 SC 4.1.2 Name, Role, Value (Level A)'],
+    'focus-aria-hidden': ['WCAG 2.2 SC 2.4.3 Focus Order (Level A)', 'WAI-ARIA 1.2'],
+    'lang-missing': ['WCAG 2.2 SC 3.1.1 Language of Page (Level A)'],
+    'meta-title-missing': ['WCAG 2.2 SC 2.4.2 Page Titled (Level A)'],
+    'contrast-low': ['WCAG 2.2 SC 1.4.3 Contrast (Minimum) (Level AA)'],
+    'target-small': ['WCAG 2.2 SC 2.5.8 Target Size (Minimum) (Level AA - Advisory/Review)'],
+    'aria-role-abstract': ['WAI-ARIA 1.2 Section 5.3', 'WCAG 2.2 SC 4.1.2 (Level A)'],
+    'aria-role-invalid': ['WAI-ARIA 1.2', 'WCAG 2.2 SC 4.1.2 (Level A)'],
+    'aria-attr-unknown': ['WAI-ARIA 1.2'],
+    'aria-attr-invalid': ['WAI-ARIA 1.2', 'WCAG 2.2 SC 4.1.2 (Level A)'],
+    'aria-tabindex-positive': ['WCAG 2.2 SC 2.4.3 Focus Order (Level A)'],
+    'aria-idref-unresolved': ['WCAG 2.2 SC 1.3.1 Info and Relationships (Level A)', 'WAI-ARIA 1.2'],
+    'landmark-main-missing': ['WAI-ARIA 1.2 Landmarks (Best Practice)'],
+    'heading-no-h1': ['WCAG 2.2 SC 1.3.1 Info and Relationships (Best Practice)'],
+    'heading-skipped': ['WCAG 2.2 SC 1.3.1 Info and Relationships (Best Practice)'],
+    'heading-no-text': ['WCAG 2.2 SC 1.3.1 Info and Relationships (Level A)'],
+    'resource-mixed-http': ['W3C Mixed Content Level 2'],
+    'form-password-http': ['NIST SP 800-63B / Transport Layer Security Best Practice'],
+    'meta-viewport-zoom': ['WCAG 2.2 SC 1.4.4 Resize Text (Level AA)']
+  };
 
   function add(el, category, severity, title, description, evidence, recommendation, confidence = 'high', extra = {}) {
     const ruleId = extra.ruleId || ruleIdFromTitle(title);
@@ -336,11 +427,15 @@
     }
     ruleCounts.set(ruleId, count + 1);
 
+    const assessment = extra.assessment || (confidence === 'high' && (severity === 'critical' || severity === 'high') ? 'confirmed' : (confidence === 'low' ? 'needs-review' : 'likely'));
+    const standards = extra.standards || RULE_STANDARDS[ruleId] || [];
+
     findings.push({
       id: `f-${findings.length + 1}`,
       el, ruleId, category, severity, title,
       element: el ? `<${el.tagName.toLowerCase()}>` : 'document',
-      description, evidence: String(evidence || '').slice(0, 260), recommendation, confidence, ...extra
+      description, evidence: String(evidence || '').slice(0, 260), recommendation,
+      confidence, assessment, standards, ...extra
     });
   }
 
@@ -528,7 +623,21 @@
   }
 
   function getAllDocumentElements() {
-    return Array.from(document.querySelectorAll('*')).filter(el => !el.hasAttribute('data-local-web-qa-overlay'));
+    const elements = [];
+    const openShadowRoots = [];
+    function traverse(root) {
+      const items = root.querySelectorAll('*');
+      for (const el of items) {
+        if (el.hasAttribute('data-local-web-qa-overlay')) continue;
+        elements.push(el);
+        if (el.shadowRoot && el.shadowRoot.mode === 'open') {
+          openShadowRoots.push(el.shadowRoot);
+          traverse(el.shadowRoot);
+        }
+      }
+    }
+    traverse(document);
+    return { elements, openShadowRoots };
   }
 
   function sampleAcrossList(list, limit) {
@@ -543,15 +652,56 @@
   }
 
   function isHashRouterFragment(href) {
-    const fragment = String(href || '').slice(1);
-    return fragment.startsWith('/') || fragment.startsWith('!/') || fragment.startsWith('!');
+    const raw = String(href || '');
+    const fragment = raw.startsWith('#') ? raw.slice(1) : raw;
+    let decoded = fragment;
+    try { decoded = decodeURIComponent(fragment); } catch (_) {}
+    return decoded.startsWith('/') || decoded.startsWith('!/') || decoded.startsWith('!') || decoded.includes('?') || decoded.includes('=');
   }
 
   function fragmentTargetExists(targetId) {
     if (!targetId) return true;
     if (targetId.toLowerCase() === 'top') return true; // Common browser convention.
-    if (document.getElementById(targetId)) return true;
-    return Array.from(document.getElementsByName(targetId)).some(el => el.tagName === 'A');
+    let decoded = targetId;
+    try { decoded = decodeURIComponent(targetId); } catch (_) {}
+    if (document.getElementById(targetId) || document.getElementById(decoded)) return true;
+    try {
+      if (document.querySelector(`[id="${CSS.escape(targetId)}"]`) || document.querySelector(`[id="${CSS.escape(decoded)}"]`)) return true;
+    } catch (_) {}
+    return Array.from(document.getElementsByName(targetId)).concat(Array.from(document.getElementsByName(decoded))).some(el => el.tagName === 'A');
+  }
+
+  function collectPerformanceMetrics() {
+    const data = { measured: {}, supported: false };
+    try {
+      if (typeof performance !== 'undefined') {
+        const navEntries = performance.getEntriesByType?.('navigation');
+        const nav = (navEntries && navEntries[0]) || performance.timing;
+        if (nav) {
+          data.supported = true;
+          const dns = (nav.domainLookupEnd && nav.domainLookupStart) ? Math.max(0, Math.round(nav.domainLookupEnd - nav.domainLookupStart)) : null;
+          const tcp = (nav.connectEnd && nav.connectStart) ? Math.max(0, Math.round(nav.connectEnd - nav.connectStart)) : null;
+          const ttfb = (nav.responseStart && nav.requestStart) ? Math.max(0, Math.round(nav.responseStart - nav.requestStart)) : null;
+          const domInteractive = (nav.domInteractive && nav.startTime !== undefined) ? Math.max(0, Math.round(nav.domInteractive - nav.startTime)) : null;
+          const domContentLoaded = (nav.domContentLoadedEventEnd && nav.startTime !== undefined) ? Math.max(0, Math.round(nav.domContentLoadedEventEnd - nav.startTime)) : null;
+          const loadComplete = (nav.loadEventEnd && nav.startTime !== undefined) ? Math.max(0, Math.round(nav.loadEventEnd - nav.startTime)) : null;
+
+          if (dns !== null) data.measured.dnsMs = dns;
+          if (tcp !== null) data.measured.tcpMs = tcp;
+          if (ttfb !== null) data.measured.ttfbMs = ttfb;
+          if (domInteractive !== null) data.measured.domInteractiveMs = domInteractive;
+          if (domContentLoaded !== null) data.measured.domContentLoadedMs = domContentLoaded;
+          if (loadComplete !== null) data.measured.loadCompleteMs = loadComplete;
+        }
+
+        const paints = performance.getEntriesByType?.('paint') || [];
+        for (const p of paints) {
+          if (p.name === 'first-paint') data.measured.firstPaintMs = Math.round(p.startTime);
+          if (p.name === 'first-contentful-paint') data.measured.firstContentfulPaintMs = Math.round(p.startTime);
+        }
+      }
+    } catch (_) {}
+    return data;
   }
 
   function getHeadingLevel(el) {
@@ -627,7 +777,7 @@
     visibleCache = new WeakMap();
     styleVisibilityCache = new WeakMap();
     const start = performance.now();
-    const all = getAllDocumentElements();
+    const { elements: all, openShadowRoots } = getAllDocumentElements();
     const title = (document.title || '').trim();
     const lang = (document.documentElement.getAttribute('lang') || '').trim();
     const viewportMeta = document.querySelector('meta[name="viewport"]');
@@ -669,12 +819,18 @@
         try { targetId = decodeURIComponent(targetId); } catch (_) {}
         if (!fragmentTargetExists(targetId)) add(link, 'functionality', 'medium', 'In-page link target was not found', 'This fragment does not match an element ID or legacy named anchor in the current document.', 'A fragment target was not found; the raw fragment is omitted for privacy.', 'Correct the fragment target or restore the missing destination.', 'medium', { ruleId: 'link-fragment-broken' });
       }
-      if (link.target === '_blank' && !/\bnoopener\b/i.test(link.rel) && !/\bnoreferrer\b/i.test(link.rel)) add(link, 'best-practice', 'low', 'New-tab link lacks explicit rel protection', 'Modern browsers generally apply noopener by default, so this is a compatibility/hardening hint rather than proof of a vulnerability.', 'A target="_blank" link has no explicit noopener/noreferrer token.', 'Consider rel="noopener" for clarity and compatibility; add noreferrer only when suppressing the referrer is desired.', 'low', { ruleId: 'link-rel-missing' });
+      if (link.target === '_blank' && !/\bnoopener\b/i.test(link.rel) && !/\bnoreferrer\b/i.test(link.rel)) add(link, 'best-practice', 'low', 'New-tab link lacks explicit rel protection', 'Modern browsers generally apply noopener by default, so this is a compatibility/hardening hint rather than proof of a vulnerability.', 'A target="_blank" link has no explicit noopener/noreferrer token.', 'Consider rel="noopener" for clarity and compatibility; add noreferrer only when suppressing the referrer is desired.', 'low', { ruleId: 'link-rel-missing', confidence: 'low', assessment: 'needs-review', standards: ['HTML Living Standard / Legacy Browser Hardening'] });
     }
 
     const buttonSelector = 'button,input[type="button"],input[type="submit"],input[type="reset"],input[type="image"],summary,[role="button"],[role="menuitem"],[role="option"],[role="tab"],[role="link"]';
     for (const button of document.querySelectorAll(buttonSelector)) {
-      if (visible(button) && !hasAccessibleName(button)) add(button, 'accessibility', 'high', 'Interactive control has no accessible name', 'A user of assistive technology may not be able to determine what this control does.', `The ${button.tagName.toLowerCase()} control has no detectable accessible name.`, 'Add meaningful visible text, an appropriate non-empty aria-label, a valid aria-labelledby reference, or alt text for image inputs.', 'high', { ruleId: 'interactive-name-missing' });
+      if (!visible(button)) continue;
+      const nameInfo = getAccessibleNameInfo(button);
+      if (!nameInfo.hasName) {
+        add(button, 'accessibility', 'high', 'Interactive control has no accessible name', 'A user of assistive technology may not be able to determine what this control does.', `The ${button.tagName.toLowerCase()} control has no detectable accessible name.`, 'Add meaningful visible text, an appropriate non-empty aria-label, a valid aria-labelledby reference, or alt text for image inputs.', 'high', { ruleId: 'interactive-name-missing' });
+      } else if (nameInfo.weak && nameInfo.source === 'title') {
+        add(button, 'best-practice', 'low', 'Control relies solely on title fallback for accessible name', 'While title provides a fallback accessible name in HTML-AAM, it is not consistently announced across all assistive technologies or touch screen devices.', `The ${button.tagName.toLowerCase()} control relies only on title="${compact(button.getAttribute('title'), 60)}".`, 'Provide visible text, an associated <label>, or an aria-label attribute for more robust accessible naming.', 'medium', { ruleId: 'accessible-name-title-fallback', confidence: 'medium', assessment: 'needs-review' });
+      }
     }
 
     for (const input of document.querySelectorAll('input,select,textarea,[role="checkbox"],[role="switch"],[role="radio"],[role="textbox"],[role="combobox"],[role="searchbox"]')) {
@@ -777,7 +933,7 @@
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0 && (r.width < 24 || r.height < 24)) {
         smallTargets += 1;
-        if (smallTargets <= 40) add(el, 'accessibility', 'low', 'Small interactive target', 'This target is smaller than 24 by 24 CSS pixels in at least one dimension. WCAG 2.2 SC 2.5.8 includes spacing (24px target spacing), inline, and equivalent control exceptions.', `Rendered size: ${Math.round(r.width)} × ${Math.round(r.height)} CSS px.`, 'Consider enlarging the hit area or providing 24px spacing between targets; verify WCAG 2.2 SC 2.5.8 applicable exceptions.', 'low', { ruleId: 'target-small' });
+        if (smallTargets <= 40) add(el, 'accessibility', 'low', 'Small interactive target', 'This target is smaller than 24 by 24 CSS pixels in at least one dimension. WCAG 2.2 SC 2.5.8 includes spacing (24px target spacing), inline, and equivalent control exceptions.', `Rendered size: ${Math.round(r.width)} × ${Math.round(r.height)} CSS px.`, 'Consider enlarging the hit area or providing 24px spacing between targets; verify WCAG 2.2 SC 2.5.8 applicable exceptions.', 'low', { ruleId: 'target-small', confidence: 'low', assessment: 'needs-review', standards: ['WCAG 2.2 SC 2.5.8 Target Size (Minimum) (Level AA - Advisory/Review)'] });
         else smallTargetOverflow += 1;
       }
     }
@@ -787,13 +943,23 @@
     const textCandidates = sampleAcrossList(contrastPool, MAX_CONTRAST_CANDIDATES);
     if (contrastPool.length > textCandidates.length) coverageWarnings.push(`Contrast scan sampled ${textCandidates.length} of ${contrastPool.length} candidate elements across the page to keep large-page scans responsive.`);
     let contrastFailuresFound = 0;
+    let contrastSkippedComplexBg = 0;
+    let contrastSkippedOpacityOrBlend = 0;
     for (const el of textCandidates) {
       const directText = Array.from(el.childNodes).some(n => n.nodeType === Node.TEXT_NODE && (n.textContent || '').trim());
-      if (!directText || el.matches(':disabled') || hasOpacityLayer(el)) continue;
+      if (!directText || el.matches(':disabled')) continue;
+      if (hasOpacityLayer(el)) {
+        contrastSkippedOpacityOrBlend += 1;
+        continue;
+      }
       const style = styleOf(el);
       const fgColor = parseCssColor(style.color);
       const bg = getEffectiveBackground(el);
-      if (!fgColor || !bg) continue;
+      if (!bg) {
+        contrastSkippedComplexBg += 1;
+        continue;
+      }
+      if (!fgColor) continue;
       const fg = composite(fgColor.rgb, bg, fgColor.alpha);
       const ratio = contrastRatio(fg, bg);
       const size = parseFloat(style.fontSize) || 16;
@@ -802,7 +968,7 @@
       const required = large ? 3 : 4.5;
       if (ratio < required) {
         contrastFailuresFound += 1;
-        if (contrastFailuresFound <= MAX_CONTRAST_REPORTS) add(el, 'accessibility', 'medium', 'Possible low text contrast', 'Computed foreground/background colors appear below the WCAG AA text-contrast threshold. Complex backgrounds, pseudo-elements and blend effects are skipped; verify visually.', `Estimated contrast ${ratio.toFixed(2)}:1; threshold ${required}:1; text content omitted for privacy.`, 'Choose text/background colors with sufficient contrast and verify against the actual rendered background.', 'medium', { contrastRatio: Number(ratio.toFixed(2)), contrastThreshold: required, ruleId: 'contrast-low' });
+        if (contrastFailuresFound <= MAX_CONTRAST_REPORTS) add(el, 'accessibility', 'medium', 'Possible low text contrast', 'Computed foreground/background colors appear below the WCAG AA text-contrast threshold. Complex backgrounds, pseudo-elements and blend effects are skipped; verify visually.', `Estimated contrast ${ratio.toFixed(2)}:1; threshold ${required}:1; text content omitted for privacy.`, 'Choose text/background colors with sufficient contrast and verify against the actual rendered background.', 'medium', { contrastRatio: Number(ratio.toFixed(2)), contrastThreshold: required, ruleId: 'contrast-low', standards: ['WCAG 2.2 SC 1.4.3 Contrast (Minimum) (Level AA)'] });
       }
     }
     if (contrastFailuresFound > MAX_CONTRAST_REPORTS) coverageWarnings.push(`${contrastFailuresFound - MAX_CONTRAST_REPORTS} additional low-contrast candidates were not listed individually.`);
@@ -824,7 +990,10 @@
     if (location.protocol === 'https:') {
       const mixedContent = collectInsecureResourceCandidates();
       const insecure = mixedContent.candidates;
-      for (const item of insecure.slice(0, 40)) add(item.el, 'best-practice', 'medium', 'HTTP resource referenced by HTTPS page', 'A secure page references a resource over unencrypted HTTP. Browsers may block active mixed content; this static check does not confirm that a request succeeded.', `${item.sourceKind} references ${safeResourceUrl(item.raw)}.`, 'Use the HTTPS version of the resource or remove it if no secure version exists.', 'medium', { ruleId: 'resource-mixed-http' });
+      for (const item of insecure.slice(0, 40)) {
+        const safeUrl = safeResourceUrl(item.raw);
+        add(item.el, 'best-practice', 'medium', 'HTTP resource referenced by HTTPS page', 'A secure page references a resource over unencrypted HTTP. Browsers may block active mixed content; this static check does not confirm that a request succeeded.', `${item.sourceKind} references ${safeUrl}.`, 'Use the HTTPS version of the resource or remove it if no secure version exists.', 'medium', { ruleId: 'resource-mixed-http', dedupeKey: `${item.sourceKind}:${safeUrl}`, resourceUrl: safeUrl, sourceKind: item.sourceKind, standards: ['W3C Mixed Content Level 2'] });
+      }
       if (insecure.length > 40) coverageWarnings.push(`${insecure.length - 40} additional mixed-content candidates were not listed individually.`);
       if (mixedContent.inaccessibleStylesheets.length) coverageWarnings.push(`${mixedContent.inaccessibleStylesheets.length} stylesheet(s) could not be inspected for CSS url() references because browser access restrictions apply.`);
     } else if (location.protocol === 'http:' && !isLocalHostname(location.hostname)) {
@@ -854,17 +1023,11 @@
         }
         lastLevel = level;
       }
-      for (const a of document.querySelectorAll('a[target="_blank"][href]')) {
-        const rel = (a.getAttribute('rel') || '').toLowerCase();
-        if (!rel.includes('noopener') && !rel.includes('noreferrer')) {
-          add(a, 'best-practice', 'low', 'External link target="_blank" missing rel="noopener"', 'Links opening in a new tab without rel="noopener" or rel="noreferrer" can expose window.opener.', 'Target is _blank without noopener/noreferrer.', 'Add rel="noopener noreferrer" to external links opening in a new tab.', 'low', { ruleId: 'link-blank-noopener' });
-        }
-      }
     }
 
-    const openShadowHosts = all.filter(el => el.shadowRoot && el.shadowRoot.mode === 'open').length;
+    const openShadowHosts = openShadowRoots.length;
     const iframeCount = document.querySelectorAll('iframe').length;
-    if (openShadowHosts > 0) coverageWarnings.push(`${openShadowHosts} open shadow root(s) detected; their internal elements are not audited by this version.`);
+    if (openShadowHosts > 0) coverageWarnings.push(`${openShadowHosts} open shadow root(s) inspected for DOM and accessibility rules.`);
     if (iframeCount > 0) coverageWarnings.push(`The scan checks iframe titles but does not inspect the contents of ${iframeCount} iframe(s).`);
     coverageWarnings.push('This is a point-in-time DOM snapshot. Lazy content that has not loaded, closed shadow roots and cross-origin frame contents are outside its coverage. Rescan after important UI states appear.');
 
@@ -878,17 +1041,8 @@
     const totalFindings = findings.length + droppedStats.total;
     truncated = findings.length > DISPLAY_LIMIT;
     if (truncated) coverageWarnings.push(`${findings.length - DISPLAY_LIMIT} lower-priority findings were omitted from the displayed report.`);
-    const displayedFindings = findings.slice(0, DISPLAY_LIMIT);
-    for (const f of displayedFindings) {
-      if (!f.selector) {
-        f.selector = f.el ? selectorFor(f.el) : 'html';
-      }
-      delete f.el;
-    }
-    for (const f of findings) {
-      if (!f.selector) f.selector = 'html';
-      delete f.el;
-    }
+
+    // Stage 1: Calculate counts and categories from ALL findings
     const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     const categories = {};
     for (const f of findings) {
@@ -902,11 +1056,29 @@
       categories[cat] = (categories[cat] || 0) + c;
     }
 
+    // Stage 2: Only generate selectors and targetKeys for findings in displayed/exported report
+    const targetSlice = options.fullExport ? findings : findings.slice(0, DISPLAY_LIMIT);
+    const targetKeyOccurrenceMap = new Map();
+    for (const f of targetSlice) {
+      if (!f.selector) {
+        f.selector = f.el ? selectorFor(f.el) : 'html';
+      }
+      const rawBase = targetKeyForFinding(f, 0);
+      const occ = targetKeyOccurrenceMap.get(rawBase) || 0;
+      targetKeyOccurrenceMap.set(rawBase, occ + 1);
+      f.targetKey = occ > 0 ? `${rawBase}:occ:${occ}` : rawBase;
+    }
+    for (const f of findings) {
+      delete f.el;
+    }
+    const displayedFindings = targetSlice.slice(0, DISPLAY_LIMIT);
+
     const rawHash = location.hash || '';
     let isHashAnchor = false;
     let isClientRoute = false;
     if (rawHash && rawHash !== '#' && rawHash.toLowerCase() !== '#top') {
-      const targetId = rawHash.startsWith('#') ? rawHash.slice(1) : rawHash;
+      let targetId = rawHash.startsWith('#') ? rawHash.slice(1) : rawHash;
+      try { targetId = decodeURIComponent(targetId); } catch (_) {}
       let anchorEl = null;
       try {
         anchorEl = targetId ? (document.getElementById(targetId) || document.querySelector(`a[name="${CSS.escape(targetId)}"]`)) : null;
@@ -952,6 +1124,7 @@
 
       const linkCandidates = document.querySelectorAll('a[href], [data-href], [data-route], [data-to]');
       for (const el of linkCandidates) {
+        if (routes.size >= 60) break;
         const raw = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-route') || el.getAttribute('data-to');
         if (!raw) continue;
         const trimmed = String(raw).trim();
@@ -963,6 +1136,9 @@
           if (/\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tar|mp4|webm|mp3|wav|css|js|map|json|xml|txt)$/i.test(u.pathname)) continue;
           if (/\/(log-?out|sign-?out|delete|auth\/signout|api\/)/i.test(u.pathname)) continue;
 
+          for (const key of Array.from(u.searchParams.keys())) {
+            if (PRIVACY.isSensitiveParam(key)) u.searchParams.delete(key);
+          }
           const normalized = normalizeRouteUrl(u.href);
           if (normalized) routes.add(normalized);
         } catch (_) {}
@@ -970,10 +1146,17 @@
       return Array.from(routes);
     }
 
+    const reportComplete = !truncated && droppedStats.total === 0;
+    const hasCoverageLimitations = openShadowHosts > 0 || iframeCount > 0 || contrastPool.length > textCandidates.length || coverageWarnings.some(w => /not audited|does not inspect|not listed individually|sampled|iframe\(s\)|stylesheet\(s\).*could not be inspected/i.test(w));
+    const coverageStatus = hasCoverageLimitations ? 'partial' : 'full';
+    const comparisonReliability = (!reportComplete || hasCoverageLimitations) ? (reportComplete ? 'provisional' : 'review-required') : 'high';
+    const completeForComparison = reportComplete && coverageStatus === 'full';
+
     return {
       product: 'Local Web QA Copilot',
       version: VERSION,
       url: location.href,
+      safeUrl: safeResourceUrl(location.href),
       origin: location.origin,
       path: location.pathname,
       title: document.title || '(untitled page)',
@@ -982,18 +1165,26 @@
       isHashAnchor,
       isClientRoute,
       discoveredRoutes: collectDiscoveredRoutes(),
+      performance: collectPerformanceMetrics(),
       metrics: {
         domElements: all.length, images: document.images.length, links: document.links.length,
         forms: document.forms.length, externalScripts: externalScriptCount,
         iframes: iframeCount, openShadowRoots: openShadowHosts,
+        openShadowRootsAudited: openShadowHosts,
         contrastCandidates: contrastPool.length, contrastCandidatesChecked: textCandidates.length,
+        contrastSampledOut: Math.max(0, contrastPool.length - textCandidates.length),
+        contrastSkippedComplexBg, contrastSkippedOpacityOrBlend,
         contrastFailuresDetected: contrastFailuresFound, smallTargetCandidates: smallTargets,
+        smallTargetOverflow,
         scanDurationMs: Math.round(performance.now() - start)
       },
       counts, categories, findings: displayedFindings,
       totalFindings, displayedFindings: displayedFindings.length,
       truncated,
-      completeForComparison: !truncated && droppedStats.total === 0 && !coverageWarnings.some(w => /not audited|does not inspect|not listed individually|sampled|open shadow root|iframe\(s\)|omitted from the displayed report|stylesheet\(s\).*could not be inspected/i.test(w)),
+      reportComplete,
+      coverageStatus,
+      comparisonReliability,
+      completeForComparison,
       coverageWarnings,
       limitations: [
         'This is a rule-based first-pass scan, not a complete WCAG, SEO, performance, security, or functional audit.',
@@ -1033,20 +1224,36 @@
     const update = () => {
       if (!el.isConnected || !host.isConnected) { removeHighlight(); return; }
       const rect = el.getBoundingClientRect();
-      frame.style.top = `${Math.max(0, rect.top)}px`;
-      frame.style.left = `${Math.max(0, rect.left)}px`;
-      frame.style.width = `${Math.max(0, Math.min(rect.width, window.innerWidth - Math.max(0, rect.left)))}px`;
-      frame.style.height = `${Math.max(0, Math.min(rect.height, window.innerHeight - Math.max(0, rect.top)))}px`;
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const visibleLeft = Math.max(0, rect.left);
+      const visibleTop = Math.max(0, rect.top);
+      const visibleRight = Math.min(viewportW, rect.right);
+      const visibleBottom = Math.min(viewportH, rect.bottom);
+      const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+      const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+      frame.style.top = `${visibleTop}px`;
+      frame.style.left = `${visibleLeft}px`;
+      frame.style.width = `${visibleWidth}px`;
+      frame.style.height = `${visibleHeight}px`;
     };
     activeHighlight = { host, update, timer: setTimeout(removeHighlight, 5200) };
     window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update, true);
     el.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'center', inline: 'center' });
     update();
-    return { ok: true };
+    return {
+      ok: true,
+      visibleRect: {
+        top: frame.style.top,
+        left: frame.style.left,
+        width: frame.style.width,
+        height: frame.style.height
+      }
+    };
   }
 
-  function waitForDomQuiet(maxMs = 1200, quietMs = 250) {
+  function waitForDomQuiet(maxMs = 600, quietMs = 150) {
     return new Promise(resolve => {
       let quietTimer = null;
       const timeout = setTimeout(done, maxMs);
@@ -1058,7 +1265,9 @@
         resolve();
       }
       try {
-        observer = new MutationObserver(() => {
+        observer = new MutationObserver(mutations => {
+          const isOverlay = mutations.every(m => m.target?.nodeType === Node.ELEMENT_NODE && m.target.hasAttribute?.('data-local-web-qa-overlay'));
+          if (isOverlay) return;
           if (quietTimer) clearTimeout(quietTimer);
           quietTimer = setTimeout(done, quietMs);
         });
@@ -1068,21 +1277,31 @@
     });
   }
 
-  const listener = (message, _sender, sendResponse) => {
-    if (!message || !['LOCAL_WEB_QA_SCAN', 'LOCAL_WEB_QA_HIGHLIGHT', 'LOCAL_WEB_QA_PING'].includes(message.type)) return false;
+  const listener = (message, sender, sendResponse) => {
+    if (!message || typeof message !== 'object') return false;
+    if (sender?.id && typeof chrome !== 'undefined' && chrome.runtime?.id && sender.id !== chrome.runtime.id) {
+      return false;
+    }
+    const validTypes = ['LOCAL_WEB_QA_SCAN', 'LOCAL_WEB_QA_HIGHLIGHT', 'LOCAL_WEB_QA_PING'];
+    if (!validTypes.includes(message.type)) return false;
+
     if (message.type === 'LOCAL_WEB_QA_PING') {
       sendResponse({ ok: true, version: VERSION });
       return false;
     }
     if (message.type === 'LOCAL_WEB_QA_HIGHLIGHT') {
-      try { sendResponse(highlight(message.selector)); }
+      const sel = typeof message.selector === 'string' ? message.selector.slice(0, 1000) : '';
+      try { sendResponse(highlight(sel)); }
       catch (error) { sendResponse({ ok: false, error: error?.message || 'Could not highlight the element.' }); }
       return false;
     }
     (async () => {
       try {
-        await waitForDomQuiet();
-        const report = scanPage(message.options || {});
+        const options = (message.options && typeof message.options === 'object') ? message.options : {};
+        if (options.quick !== true && options.settled !== false) {
+          await waitForDomQuiet(options.maxWaitMs || 600, options.quietMs || 150);
+        }
+        const report = scanPage(options);
         sendResponse({ ok: true, report });
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || 'Unknown scan error.' });

@@ -1,7 +1,7 @@
 # Weco — Local Web QA Copilot v1.2.0
 
 > **Deterministic, local-first web quality, accessibility, and multi-page auditor with developer-ready AI fix prompts.**  
-> Runs entirely in your browser side panel or floating window. Zero external network requests. Zero tracking.
+> Runs entirely in your browser side panel or floating window. No audit data upload or telemetry. Zero tracking.
 
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue.svg)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![Browser Support](https://img.shields.io/badge/Chrome%20%7C%20Edge-116%2B-green.svg)](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
@@ -17,9 +17,9 @@ Traditional accessibility and QA checkers either require sending your site's DOM
 
 **Weco (Local Web QA Copilot)** was engineered for modern web developers working on dynamic dashboards, SPAs (Next.js, Vite, React, Vue, SvelteKit), and complex multi-page apps:
 
-- **🌐 Site-Wide Dynamic Route Auditing:** Don't just scan the open tab — automatically discover and audit all linked same-origin dynamic routes across your web app.
+- **🌐 Site-Wide Dynamic Route Auditing:** Discover and audit linked same-origin routes in a temporary background tab, leaving the page you are using unchanged.
 - **↗ Movable Floating Window ("↗ Float"):** Audit your application without altering your browser's responsive viewport width or screen ratio.
-- **🔍 Deep Analysis Mode:** Uncover Shadow DOM custom element issues, broken ARIA references (`aria-labelledby`, `aria-describedby`), and heading hierarchy skips.
+- **🔍 Deep Analysis Mode:** Adds ARIA reference integrity and heading hierarchy checks. It detects open shadow-root hosts and reports their internals as an explicit coverage limit.
 - **🛡️ 100% Local-First & Zero Telemetry:** Runs strictly inside your browser sandbox. Never sends page content, DOM selectors, or cookies over the internet.
 - **🤖 AI-Ready Developer Fix Prompts:** Instantly copies evidence-backed, prompt-injection-safe prompts formatted for Claude, ChatGPT, Gemini, or GitHub Copilot with `<UNTRUSTED_PAGE_DATA>` safety wrappers.
 - **📊 Saved Regression Baselines & Diffs:** Save deterministic SHA-256 snapshots of your page's QA health. Rescan after code changes to verify fixed issues and catch new regressions.
@@ -59,18 +59,19 @@ git clone https://github.com/hitgoyani/Weco.git
 
 ### 2. Choose Your Scan Mode
 - **Scan current page:** Conducts a rapid heuristic audit on the active DOM view in under 30ms.
-- **🌐 Audit all site pages:** Automatically discovers internal routes (e.g. `/dashboard`, `/dashboard/applications`, `/dashboard/jobs`), navigates and hydrates them sequentially, and compiles a unified multi-page report.
-- **Deep Analysis mode toggle:** Enables deeper inspection into Shadow DOM components, heading sequence jumps, and ARIA reference integrity.
-
+- **🌐 Audit all site pages:** Automatically discovers internal routes (e.g. `/dashboard`, `/dashboard/applications`, `/dashboard/jobs`), audits them in a temporary background tab, and compiles a unified multi-page report. It does not make network requests beyond normal browser navigation, and it excludes obvious logout, delete, and API paths.
+- **Deep Analysis mode toggle:** Enables ARIA reference integrity, open Shadow DOM custom element inspection, and additional heading sequence checks.
+ 
 ### 3. Filter and Inspect Issues
 - Use the **Page Route selector** (in multi-page mode) to filter findings by route.
 - Filter by **Category** (Accessibility, Responsive, Functionality, Performance, SEO, Best Practice) or **Severity** (Critical, High, Medium, Low).
-- Click **Inspect element** on any finding card: Weco smoothly scrolls your page and highlights the element with a glowing purple outline without altering your site's styles.
+- View **Assessment Badges** (`CONFIRMED`, `LIKELY`, `NEEDS REVIEW`) and applicable **WCAG 2.2 Standards** tags on each finding.
+- Click **Inspect element** on any finding card: Weco smoothly scrolls your page and highlights the element with an exact viewport-clamped overlay without altering your site's styles.
 
 ### 4. Fix with AI or Save Baselines
 - **Copy fix prompt:** Copies a focused, evidence-backed prompt for the specific issue.
 - **Copy all issues prompt:** Generates a structured multi-page fix plan with untrusted data wrappers ready to paste directly into your AI coding assistant.
-- **Save baseline & Compare:** Save snapshots to track progress across sprints and confirm bug fixes.
+- **Save baseline & Compare:** Save snapshots with collision-resistant target identities to track progress across sprints and confirm bug fixes.
 
 ---
 
@@ -78,12 +79,12 @@ git clone https://github.com/hitgoyani/Weco.git
 
 | Category | Checks & Heuristics |
 | :--- | :--- |
-| **Accessibility (a11y)** | Missing / whitespace `alt` on images, nameless interactive controls, form inputs without detectable labels, focusable elements inside `aria-hidden`, invalid ARIA roles/attributes, positive `tabindex` traps, viewport zoom lockouts, and small touch targets. |
-| **Site-Wide Navigation** | Broken in-page fragment links, invalid `#` placeholders, dead image links, legacy named anchors, duplicate DOM element IDs. |
-| **Responsive & Layout** | Horizontal layout overflow (`overflow-x`), culprit container identification, viewport clipping, touch target sizing under 24×24px. |
-| **Contrast Analysis** | Solid color contrast evaluation across standard and modern CSS color formats (including `oklch()`, `rgb()`, `hsl()`). Complex/unknown backgrounds are intelligently skipped rather than reporting false ratios. |
-| **Performance & SEO** | Excessive DOM node counts, script tag saturation, oversized image assets, missing or overly long `<title>`, missing meta description, missing responsive viewport tag. |
-| **Security & Best Practice** | Mixed content (HTTP resources on HTTPS pages), plaintext password fields on insecure non-local pages. |
+| **Accessibility (a11y)** | Missing / whitespace `alt` on images, nameless interactive controls (with weak `title`/`placeholder` fallback warnings), form inputs without detectable labels, focusable elements inside `aria-hidden`, invalid ARIA roles/attributes, positive `tabindex` traps, viewport zoom lockouts, open Shadow DOM custom elements, and small touch targets. Mapped directly to WCAG 2.2 criteria. |
+| **Site-Wide Navigation** | Broken in-page fragment links (with percent-encoding decoding), invalid `#` placeholders, broken image resources, legacy named anchors, duplicate DOM element IDs. Route navigation follows normal browser page loads; it does not make HEAD requests or inspect HTTP status codes. |
+| **Responsive & Layout** | Horizontal layout overflow (`overflow-x`), culprit container identification, viewport clipping, touch target sizing under 24×24px with explicit review recommendations. |
+| **Contrast Analysis** | Solid color contrast evaluation across standard and modern CSS color formats (including `oklch()`, `rgb()`, `hsl()`). Complex/unknown backgrounds and opacity/blending effects are transparently tracked and reported. |
+| **Performance & SEO** | Browser Navigation Timing (TTFB, DOM Interactive, DOM Complete) and Paint Timing (First Paint, First Contentful Paint), excessive DOM node counts, script tag saturation, oversized image assets, missing `<title>`, missing meta description, missing responsive viewport. |
+| **Security & Best Practice** | Insecure mixed content (HTTP resources on HTTPS pages with individual resource reporting), plaintext password fields on insecure non-local pages, sensitive URL query parameter redaction. |
 
 ---
 
@@ -91,7 +92,7 @@ git clone https://github.com/hitgoyani/Weco.git
 
 Weco is built on a **strict local-first architecture**:
 
-1. **Zero External Requests:** Weco makes zero fetch, XHR, or analytics requests to any external server.
+1. **No Audit Data Upload:** Weco makes no fetch, XHR, or analytics request to upload page data. A site-wide audit opens the discovered routes in a temporary browser tab, so those pages load normally and may contact their own servers.
 2. **Automatic Secret Redaction:** When copying prompts or exporting reports, Weco's privacy engine automatically scrubs:
    - Personal Identification numbers (PAN)
    - JSON Web Tokens (JWT) & bearer tokens

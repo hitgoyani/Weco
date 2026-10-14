@@ -41,14 +41,15 @@ async function sha256Hex(str) {
 }
 
 async function stableFindingKey(f) {
-  if (f.targetKey) return f.targetKey;
   const target = f.selector || '';
   const pageScope = f.pagePath || '';
-  const hash = await sha256Hex((f.ruleId || f.category) + '|' + pageScope + '|' + target);
+  const identity = f.targetKey || target;
+  const hash = await sha256Hex((f.ruleId || f.category) + '|' + pageScope + '|' + identity);
   return `${f.ruleId || f.category}:${hash}`;
 }
 
 async function findingSignature(f) {
+  if (f.findingKey) return f.findingKey;
   return await stableFindingKey(f);
 }
 
@@ -61,6 +62,8 @@ function sanitizedFinding(f) {
     category: f.category,
     severity: f.severity,
     confidence: f.confidence || 'medium',
+    assessment: f.assessment || 'likely',
+    standards: Array.isArray(f.standards) ? f.standards : [],
     title: safeTextForSharing(f.title),
     element: safeTextForSharing(f.element || ''),
     selector: safeSelectorForSharing(f.selector),
@@ -89,6 +92,7 @@ function sanitizeReportForSharing(report) {
     path: (() => { try { const u = new URL(report.url); return ['http:', 'https:'].includes(u.protocol) ? safePathname(report.path || '/') : '(path omitted)'; } catch (_) { return '(path omitted)'; } })(),
     title: safeTextForSharing(report.title),
     viewport: report.viewport ? { width: report.viewport.width, height: report.viewport.height, devicePixelRatio: report.viewport.devicePixelRatio } : undefined,
+    performance: report.performance || undefined,
     metrics: report.metrics ? {
       domElements: report.metrics.domElements,
       images: report.metrics.images,
@@ -97,8 +101,14 @@ function sanitizeReportForSharing(report) {
       externalScripts: report.metrics.externalScripts,
       iframes: report.metrics.iframes,
       openShadowRoots: report.metrics.openShadowRoots,
+      openShadowRootsAudited: report.metrics.openShadowRootsAudited,
       contrastCandidates: report.metrics.contrastCandidates,
       contrastCandidatesChecked: report.metrics.contrastCandidatesChecked,
+      contrastSampledOut: report.metrics.contrastSampledOut,
+      contrastSkippedComplexBg: report.metrics.contrastSkippedComplexBg,
+      contrastSkippedOpacityOrBlend: report.metrics.contrastSkippedOpacityOrBlend,
+      contrastFailuresDetected: report.metrics.contrastFailuresDetected,
+      smallTargetCandidates: report.metrics.smallTargetCandidates,
       scanDurationMs: report.metrics.scanDurationMs
     } : {},
     counts: report.counts ? {
@@ -114,6 +124,10 @@ function sanitizeReportForSharing(report) {
     totalFindings: report.totalFindings,
     displayedFindings: report.displayedFindings,
     truncated: !!report.truncated,
+    reportComplete: report.reportComplete !== false,
+    coverageStatus: report.coverageStatus || 'full',
+    comparisonReliability: report.comparisonReliability || 'high',
+    completeForComparison: report.completeForComparison !== false,
     findings: (report.findings || []).map(sanitizedFinding),
     limitations: (report.limitations || []).map(safeTextForSharing),
     coverageWarnings: (report.coverageWarnings || []).map(safeTextForSharing)
@@ -474,6 +488,17 @@ async function runScan() {
   }
 }
 
+function normalizeCrawlUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    url.hash = '';
+    if (url.pathname.length > 1 && url.pathname.endsWith('/')) url.pathname = url.pathname.slice(0, -1);
+    return url.href;
+  } catch (_) {
+    return rawUrl;
+  }
+}
+
 function navigateTabAndWait(tabId, url, timeoutMs = 12000) {
   return new Promise((resolve) => {
     let resolved = false;
@@ -484,11 +509,14 @@ function navigateTabAndWait(tabId, url, timeoutMs = 12000) {
       try { chrome.tabs.onUpdated.removeListener(onTabUpdated); } catch (_) {}
     };
 
-    const done = () => {
+    const done = async () => {
       if (resolved) return;
       resolved = true;
       cleanup();
-      setTimeout(resolve, 350);
+      setTimeout(async () => {
+        try { resolve(await chrome.tabs.get(tabId)); }
+        catch (_) { resolve(null); }
+      }, 350);
     };
 
     const onTabUpdated = (updatedTabId, info) => {
@@ -508,18 +536,36 @@ function navigateTabAndWait(tabId, url, timeoutMs = 12000) {
   });
 }
 
+function requestSiteAuditPermission(url) {
+  if (!chrome.permissions?.request) return Promise.resolve(true);
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return Promise.resolve(true);
+    // Invoke before the first await in runSiteScan to retain the user gesture.
+    return chrome.permissions.request({ origins: [`${parsed.origin}/*`] });
+  } catch (_) {
+    return Promise.resolve(false);
+  }
+}
+
 async function runSiteScan() {
   if (state.isSiteScanning) {
     state.abortSiteScan = true;
     setStatus('Stopping site audit… finalizing captured pages.', 'info');
     return;
   }
+  const permissionUrl = state.tab?.url;
+  const permissionRequest = permissionUrl ? requestSiteAuditPermission(permissionUrl) : Promise.resolve(true);
   const active = await getActiveTab().catch(() => null);
   if (active && active.id !== state.tab?.id) { await selectTabContext(active); return; }
   if (active && active.id === state.tab?.id) state.tab = active;
   if (!state.tab || !/^(https?:|file:)/i.test(state.tab.url || '')) return;
 
-  const startTab = state.tab;
+  if (!await permissionRequest) {
+    setStatus('Permission to inspect this site was not granted. Site audits use a temporary background tab so your active page is not changed.', 'error');
+    return;
+  }
+
   const startUrl = state.tab.url;
   const scanEpoch = contextEpoch;
 
@@ -540,52 +586,66 @@ async function runSiteScan() {
   const MAX_SITE_PAGES = 15;
   const queue = [startUrl];
   const queuedSet = new Set([startUrl]);
-  const visited = new Set();
+  const visitedRequests = new Set();
+  const scannedFinalUrls = new Set();
   const pagesScanned = [];
   const allFindings = [];
   const aggregatedCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   const aggregatedCategories = {};
   let totalDomElements = 0, totalImages = 0, totalLinks = 0, totalForms = 0;
+  let totalFindings = 0;
   const coverageWarnings = new Set();
   let firstReport = null;
+  let auditTabId = null;
+  let completeForComparison = true;
 
   try {
-    while (queue.length > 0 && visited.size < MAX_SITE_PAGES && !state.abortSiteScan) {
-      const currentUrl = queue.shift();
-      if (visited.has(currentUrl)) continue;
-      visited.add(currentUrl);
+    const auditTab = await chrome.tabs.create({ url: startUrl, active: false });
+    auditTabId = auditTab?.id;
+    if (typeof auditTabId !== 'number') throw new Error('Could not create the temporary background tab for this audit.');
 
-      const pageIdx = visited.size;
+    while (queue.length > 0 && visitedRequests.size < MAX_SITE_PAGES && !state.abortSiteScan) {
+      const currentUrl = queue.shift();
+      const requestKey = normalizeCrawlUrl(currentUrl);
+      if (visitedRequests.has(requestKey)) continue;
+      visitedRequests.add(requestKey);
+
+      const pageIdx = visitedRequests.size;
       setStatus(`Auditing page ${pageIdx}${queue.length > 0 ? ` (+${queue.length} discovered)` : ''}: ${shortUrl(currentUrl)}…`);
 
       try {
-        if (state.tab?.url !== currentUrl) {
-          await navigateTabAndWait(startTab.id, currentUrl);
-          state.tab = await getActiveTab().catch(() => state.tab);
-        }
+        const tabAfterNavigation = await navigateTabAndWait(auditTabId, currentUrl);
+        if (!tabAfterNavigation) throw new Error('The temporary audit tab was closed before the page finished loading.');
 
-        await ensureInjected(state.tab);
+        await ensureInjected(tabAfterNavigation);
         const isDeep = Boolean($('deepScanToggle')?.checked);
-        const response = await chrome.tabs.sendMessage(startTab.id, {
+        const response = await chrome.tabs.sendMessage(auditTabId, {
           type: 'LOCAL_WEB_QA_SCAN',
           options: { deep: isDeep }
         });
 
         if (response?.ok && response.report) {
           const rep = response.report;
+          const finalKey = normalizeCrawlUrl(rep.url || tabAfterNavigation.url || currentUrl);
+          if (scannedFinalUrls.has(finalKey)) {
+            coverageWarnings.add(`Skipped duplicate route after redirect: ${shortUrl(rep.url || currentUrl)}.`);
+            continue;
+          }
+          scannedFinalUrls.add(finalKey);
           if (!firstReport) firstReport = rep;
 
           pagesScanned.push({
             url: rep.url,
             path: rep.path || new URL(rep.url).pathname,
             title: rep.title || '(untitled page)',
-            findingsCount: rep.findings.length,
+            findingsCount: rep.totalFindings ?? rep.findings.length,
+            displayedFindings: rep.findings.length,
             durationMs: rep.metrics?.scanDurationMs || 0
           });
 
           if (Array.isArray(rep.discoveredRoutes)) {
             for (const route of rep.discoveredRoutes) {
-              if (!queuedSet.has(route) && visited.size + queue.length < MAX_SITE_PAGES) {
+              if (!queuedSet.has(route) && visitedRequests.size + queue.length < MAX_SITE_PAGES) {
                 queuedSet.add(route);
                 queue.push(route);
               }
@@ -596,6 +656,8 @@ async function runSiteScan() {
           totalImages += rep.metrics?.images || 0;
           totalLinks += rep.metrics?.links || 0;
           totalForms += rep.metrics?.forms || 0;
+          totalFindings += rep.totalFindings ?? rep.findings.length;
+          if (rep.completeForComparison === false) completeForComparison = false;
 
           for (const [k, v] of Object.entries(rep.counts || {})) {
             aggregatedCounts[k] = (aggregatedCounts[k] || 0) + (v || 0);
@@ -628,12 +690,8 @@ async function runSiteScan() {
       throw new Error('No pages could be audited. Try checking page permissions or reloading.');
     }
 
-    // Restore tab to starting URL
-    if (state.tab?.url !== startUrl && !state.abortSiteScan) {
-      setStatus('Returning to initial page…');
-      await navigateTabAndWait(startTab.id, startUrl).catch(() => {});
-      state.tab = await getActiveTab().catch(() => state.tab);
-    }
+    if (state.abortSiteScan) coverageWarnings.add('The site audit was stopped early; only captured pages are included.');
+    if (totalFindings > allFindings.length) coverageWarnings.add(`${totalFindings - allFindings.length} detected finding(s) were omitted from the displayed list by per-page reporting limits.`);
 
     state.report = {
       product: 'Local Web QA Copilot',
@@ -656,9 +714,10 @@ async function runSiteScan() {
       counts: aggregatedCounts,
       categories: aggregatedCategories,
       findings: allFindings,
-      totalFindings: allFindings.length,
+      totalFindings,
       displayedFindings: allFindings.length,
-      truncated: false,
+      truncated: totalFindings > allFindings.length,
+      completeForComparison: completeForComparison && !state.abortSiteScan && totalFindings === allFindings.length,
       coverageWarnings: Array.from(coverageWarnings),
       limitations: firstReport?.limitations || [
         'This is a rule-based scan across discovered pages on this site.',
@@ -672,7 +731,7 @@ async function runSiteScan() {
     renderReport();
     await persistReport();
     setActionButtonsEnabled(true);
-    setStatus(`Site audit complete: ${pagesScanned.length} page${pagesScanned.length === 1 ? '' : 's'} audited · ${allFindings.length} finding${allFindings.length === 1 ? '' : 's'} detected across site · no server upload.`, 'success');
+    setStatus(`Site audit complete: ${pagesScanned.length} page${pagesScanned.length === 1 ? '' : 's'} audited · ${totalFindings} finding${totalFindings === 1 ? '' : 's'} detected across site · your active page was not changed.`, 'success');
   } catch (error) {
     if (scanEpoch !== contextEpoch) return;
     setStatus(`Site audit failed: ${error?.message || 'Unknown error'}`, 'error');
@@ -680,6 +739,9 @@ async function runSiteScan() {
     $('reportSection').hidden = true;
     setActionButtonsEnabled(false);
   } finally {
+    if (auditTabId !== null) {
+      try { await chrome.tabs.remove(auditTabId); } catch (_) {}
+    }
     state.isSiteScanning = false;
     state.abortSiteScan = false;
     if ($('scanSiteBtn')) {
@@ -765,9 +827,11 @@ function findingCard(f) {
   const category = categoryLabels[f.category] || f.category;
   const confidence = f.confidence ? ` · ${f.confidence} confidence` : '';
   const pageTag = f.pagePath ? `<span class="page-tag" title="${escapeHtml(f.pageUrl || f.pagePath)}">${escapeHtml(f.pagePath)}</span>` : '';
+  const assessmentBadge = f.assessment ? `<span class="assessment-badge assessment-${escapeHtml(f.assessment)}">${escapeHtml(f.assessment.replace(/-/g, ' '))}</span>` : '';
+  const standardsTags = Array.isArray(f.standards) && f.standards.length > 0 ? f.standards.map(s => `<span class="standard-tag">${escapeHtml(s)}</span>`).join('') : '';
   return `<article class="finding-card sev-${escapeHtml(f.severity)}">
     <div class="finding-top"><div class="finding-title-wrap"><div class="finding-title">${escapeHtml(f.title)}</div><div class="finding-subtitle">${escapeHtml(f.element || 'page element')}${escapeHtml(confidence)}</div></div><span class="badge ${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span></div>
-    <div class="meta-tags"><span class="category-tag">${escapeHtml(category)}</span>${pageTag}</div>
+    <div class="meta-tags"><span class="category-tag">${escapeHtml(category)}</span>${assessmentBadge}${standardsTags}${pageTag}</div>
     <p class="finding-desc">${escapeHtml(f.description)}</p>
     ${f.evidence ? `<div class="evidence">${escapeHtml(f.evidence)}</div>` : ''}
     <div class="recommendation"><b>Suggested next step:</b> ${escapeHtml(f.recommendation)}</div>
@@ -882,7 +946,8 @@ async function saveBaseline() {
         category: f.category,
         severity: f.severity,
         selector: safeSelectorForSharing(f.selector),
-        targetKey: await stableFindingKey(f)
+        targetKey: f.targetKey,
+        findingKey: await stableFindingKey(f)
       })))
     };
     await chrome.storage.local.set({ [key]: baseline });
@@ -928,7 +993,7 @@ async function compareBaseline() {
     if (viewportChanged) {
       reliabilityNote += ` (Viewport changed: ${baseline.viewport?.width}×${baseline.viewport?.height} vs ${state.report.viewport?.width}×${state.report.viewport?.height}).`;
     }
-    $('comparePanel').innerHTML = `<strong>Baseline comparison</strong><div class="finding-subtitle">Saved ${escapeHtml(formatDate(baseline.savedAt))} · matched by rule and selector</div><div class="compare-stats"><span><b class="resolved-count">${resolutionReliable ? resolved.length : '—'}</b> ${escapeHtml(resolvedLabel)}</span><span><b class="new-count">${added.length}</b> new in captured results</span><span><b>${kept.length}</b> still present</span></div>${topResolved}${resolutionReliable && resolved.length > 5 ? `<div class="finding-delta">…and ${resolved.length - 5} more no longer detected</div>` : ''}${topAdded}${added.length > 5 ? `<div class="finding-delta">…and ${added.length - 5} more new findings</div>` : ''}<div class="finding-delta note">${escapeHtml(reliabilityNote)}</div>`;
+    $('comparePanel').innerHTML = `<strong>Baseline comparison</strong><div class="finding-subtitle">Saved ${escapeHtml(formatDate(baseline.savedAt))} · matched by rule and stable element fingerprint</div><div class="compare-stats"><span><b class="resolved-count">${resolutionReliable ? resolved.length : '—'}</b> ${escapeHtml(resolvedLabel)}</span><span><b class="new-count">${added.length}</b> new in captured results</span><span><b>${kept.length}</b> still present</span></div>${topResolved}${resolutionReliable && resolved.length > 5 ? `<div class="finding-delta">…and ${resolved.length - 5} more no longer detected</div>` : ''}${topAdded}${added.length > 5 ? `<div class="finding-delta">…and ${added.length - 5} more new findings</div>` : ''}<div class="finding-delta note">${escapeHtml(reliabilityNote)}</div>`;
     $('comparePanel').hidden = false;
     setStatus(resolutionReliable ? `Compared with baseline: ${resolved.length} no longer detected, ${added.length} new, ${kept.length} still present.` : `Compared captured findings: ${added.length} new and ${kept.length} still present. Resolution is unverified because coverage is incomplete or context changed.`, 'success');
   } catch (error) {

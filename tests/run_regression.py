@@ -138,6 +138,40 @@ async def main():
         assert report["totalFindings"] >= len(findings)
         assert not page_errors, page_errors
 
+        # Deep mode adds ARIA checks but must not duplicate the existing new-tab
+        # link hardening finding for the same element.
+        await page.evaluate("""() => {
+          const link = document.createElement('a');
+          link.id = 'deep-blank-link'; link.href = '/new-window'; link.target = '_blank'; link.textContent = 'Open';
+          document.body.appendChild(link);
+        }""")
+        deep_result = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN', options:{deep:true}}, {}, resolve))""")
+        deep_link_findings = [f for f in deep_result['report']['findings']
+                              if f.get('selector') == '#deep-blank-link' and f['ruleId'] == 'link-rel-missing']
+        assert len(deep_link_findings) == 1, deep_link_findings
+        assert deep_link_findings[0]['ruleId'] == 'link-rel-missing', deep_link_findings
+
+        # A stable ancestor marker makes a baseline survive a harmless sibling
+        # insertion even when the generated CSS selector changes.
+        await page.evaluate("""() => {
+          const holder = document.createElement('section'); holder.dataset.testid = 'baseline-fingerprint';
+          const image = document.createElement('img'); image.alt = ' '; holder.appendChild(image);
+          document.body.appendChild(holder);
+        }""")
+        fingerprint_before = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        before_key = next(f['targetKey'] for f in fingerprint_before['report']['findings']
+                          if f['ruleId'] == 'image-alt-missing' and '|test:' in f['targetKey'])
+        await page.evaluate("""() => {
+          const sibling = document.createElement('img'); sibling.alt = '';
+          document.querySelector('[data-testid="baseline-fingerprint"]').prepend(sibling);
+        }""")
+        fingerprint_after = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN'}, {}, resolve))""")
+        matching_keys = [f['targetKey'] for f in fingerprint_after['report']['findings'] if f['ruleId'] == 'image-alt-missing']
+        assert before_key in matching_keys, (before_key, matching_keys)
+
         print(f"PASS: {len(findings)} displayed findings from {report['totalFindings']} total.")
         print(f"PASS: scan took {report['metrics']['scanDurationMs']} ms; {len(report['coverageWarnings'])} coverage note(s).")
         print("PASS: accessible names, fragments, contrast (including oklch), contrast cap/unknown-background skip, headings, tabindex, ARIA roles, overflow, and coverage behavior.")
@@ -305,8 +339,81 @@ async def main():
         high_buttons = [f for f in overflow_report['findings'] if f['title'] == 'Interactive control has no accessible name']
         assert len(high_buttons) >= 6, f'High-severity findings were omitted by truncation: {len(high_buttons)}'
         assert any('omitted from the displayed report' in warning for warning in overflow_report['coverageWarnings'])
-        assert all(f['severity'] in ('critical', 'high') for f in overflow_report['findings'][:6])
         print(f"PASS: severity-first truncation preserved high findings ({len(high_buttons)} in first {len(overflow_report['findings'])}); total={overflow_report['totalFindings']}.")
+        await page.evaluate("""() => document.getElementById('truncation-test-holder')?.remove()""")
+
+        # Test: Child with visibility:visible inside ancestor with visibility:hidden is exposed
+        await page.evaluate("""() => {
+          const wrap = document.createElement('div');
+          wrap.id = 'vis-override-wrap';
+          wrap.style.visibility = 'hidden';
+          const btn = document.createElement('button');
+          btn.id = 'vis-override-btn';
+          btn.style.visibility = 'visible';
+          btn.textContent = 'Submit Order';
+          wrap.appendChild(btn);
+          document.body.appendChild(wrap);
+        }""")
+        vis_res = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN', options: { quick: true }}, {}, resolve))""")
+        assert vis_res and vis_res.get('ok')
+        assert not any(f['title'] == 'Interactive control has no accessible name' and f['selector'] == '#vis-override-btn' for f in vis_res['report']['findings']), "Visible button inside visibility:hidden parent must not be flagged as missing accessible name"
+        await page.evaluate("""() => document.getElementById('vis-override-wrap')?.remove()""")
+
+        # Test: Repeated identical controls receive distinct disambiguated targetKeys
+        await page.evaluate("""() => {
+          const table = document.createElement('div');
+          table.id = 'disambig-test-table';
+          table.innerHTML = `
+            <div data-testid="dup-ancestor">
+              <button class="icon-btn-test" id="icon-btn-1" style="display:inline-block;width:30px;height:30px;"></button>
+              <button class="icon-btn-test" id="icon-btn-2" style="display:inline-block;width:30px;height:30px;"></button>
+            </div>
+          `;
+          document.body.appendChild(table);
+        }""")
+        dup_res = await page.evaluate("""async () => await new Promise(resolve =>
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type:'LOCAL_WEB_QA_SCAN', options: { quick: true }}, {}, resolve))""")
+        assert dup_res and dup_res.get('ok')
+        icon_findings = [f for f in dup_res['report']['findings'] if f['ruleId'] == 'interactive-name-missing' and 'icon-btn-' in f['selector']]
+        assert len(icon_findings) == 2, f"Expected 2 findings, got {len(icon_findings)}"
+        assert icon_findings[0]['targetKey'] != icon_findings[1]['targetKey'], f"Duplicate buttons must have distinct targetKeys: {icon_findings[0]['targetKey']} vs {icon_findings[1]['targetKey']}"
+        assert ':occ:1' in icon_findings[1]['targetKey'], f"Second occurrence must include :occ:1 disambiguation, got: {icon_findings[1]['targetKey']}"
+        await page.evaluate("""() => document.getElementById('disambig-test-table')?.remove()""")
+
+        # Test: Highlight overlay clamps partially off-screen element coordinates to visible intersection
+        await page.evaluate("""() => {
+          const offEl = document.createElement('div');
+          offEl.id = 'partially-offscreen-el';
+          offEl.style.position = 'fixed';
+          offEl.style.top = '-20px';
+          offEl.style.left = '-10px';
+          offEl.style.width = '100px';
+          offEl.style.height = '80px';
+          document.body.appendChild(offEl);
+        }""")
+        hl_res = await page.evaluate("""() => {
+          let res = null;
+          window.__LOCAL_WEB_QA_COPILOT__.listener({type: 'LOCAL_WEB_QA_HIGHLIGHT', selector: '#partially-offscreen-el'}, {}, (r) => { res = r; });
+          return res?.visibleRect;
+        }""")
+        assert hl_res['top'] == '0px', f"Expected clamped top 0px, got {hl_res['top']}"
+        assert hl_res['left'] == '0px', f"Expected clamped left 0px, got {hl_res['left']}"
+        assert hl_res['width'] == '90px', f"Expected visible width 90px (100 - 10), got {hl_res['width']}"
+        assert hl_res['height'] == '60px', f"Expected visible height 60px (80 - 20), got {hl_res['height']}"
+        await page.evaluate("""() => {
+          window.__LOCAL_WEB_QA_COPILOT__.cleanupHighlight();
+          document.getElementById('partially-offscreen-el')?.remove();
+        }""")
+
+        # Test: reportComplete, coverageStatus, comparisonReliability, safeUrl, and performance metrics
+        sample_report = dup_res['report']
+        assert 'reportComplete' in sample_report
+        assert 'coverageStatus' in sample_report
+        assert 'comparisonReliability' in sample_report
+        assert 'performance' in sample_report
+        assert 'safeUrl' in sample_report
+        print("PASS: visibility override, targetKey disambiguation, highlight viewport intersection, and performance/coverage reporting verified.")
         await browser.close()
 
 

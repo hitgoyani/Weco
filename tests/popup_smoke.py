@@ -76,23 +76,27 @@ async def main():
           window.__requestedOrigins = [];
           const tabs = {
             currentUrl: report.url,
+            auditUrl: null,
+            removedTabIds: [],
             async query() { return [{id: 1, url: this.currentUrl, title: report.title, active: true}]; },
-            async get() { return {id: 1, url: this.currentUrl, title: report.title, active: true}; },
-            async create() { return {id: 2}; },
+            async get(id) { return {id, url: id === 2 ? this.auditUrl : this.currentUrl, title: report.title, active: id === 1}; },
+            async create(props) { this.auditUrl = props.url; return {id: 2, url: this.auditUrl, active: false}; },
+            async remove(tabId) { this.removedTabIds.push(tabId); },
             async update(tabId, props) {
               if (props.url) {
-                this.currentUrl = props.url;
+                if (tabId === 2) this.auditUrl = props.url;
+                else this.currentUrl = props.url;
                 setTimeout(() => {
                   if (this.onUpdated?.listener) this.onUpdated.listener(tabId, { status: 'complete', url: props.url });
                 }, 10);
               }
-              return {id: 1, url: this.currentUrl, title: report.title, active: true};
+              return {id: tabId, url: tabId === 2 ? this.auditUrl : this.currentUrl, title: report.title, active: tabId === 1};
             },
-            async sendMessage(_tabId, message) {
+            async sendMessage(tabId, message) {
               if (message.type === 'LOCAL_WEB_QA_SCAN') {
                 if (window.__sampleReport) {
-                  window.__sampleReport.url = this.currentUrl;
-                  try { window.__sampleReport.path = new URL(this.currentUrl).pathname; } catch (_) {}
+                  window.__sampleReport.url = tabId === 2 ? this.auditUrl : this.currentUrl;
+                  try { window.__sampleReport.path = new URL(window.__sampleReport.url).pathname; } catch (_) {}
                 }
                 return {ok: true, report: window.__sampleReport};
               }
@@ -124,9 +128,9 @@ async def main():
               async digest(algo, data) {
                 const arr = new Uint8Array(32);
                 const src = new Uint8Array(data);
-                for (let i = 0; i < src.length; i++) {
-                  arr[i % 32] = (arr[i % 32] * 31 + src[i]) & 0xff;
-                }
+                let hash = 0x811c9dc5;
+                for (const byte of src) { hash ^= byte; hash = Math.imul(hash, 0x01000193); }
+                for (let i = 0; i < arr.length; i++) arr[i] = ((hash >>> ((i % 4) * 8)) & 0xff) ^ ((i * 17) & 0xff);
                 return arr.buffer;
               }
             },
@@ -221,6 +225,8 @@ async def main():
         fix_plan = await page.evaluate("() => fullFixPlan()")
         assert "multi-page-site-audit" in fix_plan
         assert "/mock-qa/jobs" in fix_plan
+        assert await page.evaluate("() => window.chrome.tabs.currentUrl") == "https://example.com/mock-qa", "Site audit must not navigate the active tab"
+        assert await page.evaluate("() => window.chrome.tabs.removedTabIds.includes(2)"), "Temporary audit tab must be closed"
 
         assert not errors, errors
 
